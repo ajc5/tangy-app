@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">tangerine-data-collector</string>
+    <string name="title_activity_main">tangerine-data-collector</string>
+    <string name="package_name">com.thinkdev.tangerine</string>
+    <string name="custom_url_scheme">com.thinkdev.tangerine</string>
+</resources>
