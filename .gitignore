@@ -4,8 +4,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Capacitor generated web assets (build output)
-www/
+# Capacitor build output (copied from www/ by cap sync)
+android/app/src/main/assets/public/
+ios/App/App/public/
 
 # macOS
 .DS_Store
