@@ -20,6 +20,12 @@ body {
   padding: 70px 20px 20px;
 }
 
+/* Groups and forms lists should be top-aligned, not vertically centered */
+#groups,
+#forms {
+  justify-content: flex-start;
+}
+
 .card {
   background: white;
   border-radius: 12px;
@@ -163,13 +169,42 @@ li:hover {
   box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
 
+.menu-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+}
+
 .menu-bar .menu-title {
   font-size: 16px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-right: 12px;
+}
+
+.menu-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  margin-right: 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+
+.menu-logo:hover {
+  opacity: 0.8;
+}
+
+/* ===== Login Logo ===== */
+.login-logo {
+  display: block;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 16px;
+  border-radius: 12px;
 }
 
 .menu-bar .menu-actions {

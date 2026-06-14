@@ -1,4 +1,4 @@
-package com.thinkdev.tangerine;
+package org.tangerinecentral.tangerine;
 
 import com.getcapacitor.BridgeActivity;
 

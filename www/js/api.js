@@ -111,6 +111,27 @@ const api = {
     }
   },
 
+  async getGroupLabel(groupId) {
+    // Fetch the group document to get its label.
+    // Tangerine stores group docs in the main DB, accessible via /api/<groupId>
+    const url = `${this.getBaseUrl()}/api/${groupId}`;
+    console.log('[API] GET group label request to:', url);
+    try {
+      const response = await httpClient.get(url, {
+        'Authorization': localStorage.getItem('token')
+      });
+      if (!response.ok) {
+        console.warn('[API] Failed to fetch group label for', groupId, response.status);
+        return null;
+      }
+      const doc = await response.json();
+      return doc.label || null;
+    } catch (err) {
+      console.warn('[API] Error fetching group label for', groupId, err);
+      return null;
+    }
+  },
+
   logout() {
     localStorage.removeItem('token');
   }

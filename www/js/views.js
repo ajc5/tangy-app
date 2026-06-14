@@ -13,20 +13,26 @@ const views = {
     menuBar.id = 'menu-bar';
     menuBar.className = 'menu-bar';
 
+    // Left side: logo + title
+    const leftSide = document.createElement('div');
+    leftSide.className = 'menu-left';
+
+    const logoImg = document.createElement('img');
+    logoImg.src = 'img/logo-menu.png';
+    logoImg.alt = 'Tangerine';
+    logoImg.className = 'menu-logo';
+    logoImg.addEventListener('click', () => this.goHome());
+    leftSide.appendChild(logoImg);
+
     const titleEl = document.createElement('span');
     titleEl.className = 'menu-title';
-    titleEl.textContent = title || 'Tangerine Data Collector';
-    menuBar.appendChild(titleEl);
+    titleEl.textContent = title || 'Tangerine';
+    leftSide.appendChild(titleEl);
+
+    menuBar.appendChild(leftSide);
 
     const actions = document.createElement('div');
     actions.className = 'menu-actions';
-
-    // Home button
-    const homeBtn = document.createElement('button');
-    homeBtn.className = 'menu-btn';
-    homeBtn.textContent = 'Home';
-    homeBtn.addEventListener('click', () => this.goHome());
-    actions.appendChild(homeBtn);
 
     // Back button (only enabled if there's history)
     const backBtn = document.createElement('button');
@@ -79,18 +85,32 @@ const views = {
     api.logout();
     const serverUrl = api.getBaseUrl();
     this.removeMenuBar();
+    // Clear browser history and start fresh login flow
+    if (history.length > 1) {
+      history.go(-(history.length - 1));
+      // After clearing, push fresh entries
+      setTimeout(() => {
+        if (serverUrl) {
+          this.renderLoginStep2();
+        } else {
+          this.renderLoginStep1();
+        }
+      }, 50);
+      return;
+    }
     if (serverUrl) {
       this.renderLoginStep2();
     } else {
       this.renderLoginStep1();
     }
   },
-  renderLoginStep1() {
+  renderLoginStep1(pushHistory = true) {
     this.removeMenuBar();
     const container = document.getElementById('page-container');
     container.innerHTML = `
       <div class="screen" id="login-step1">
         <div class="card">
+          <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
           <h1>Connect to a Tangerine Server</h1>
           <input type="text" id="server-url" placeholder="https://your-server.com" value="${api.getBaseUrl()}">
           <button id="connect-btn">Connect</button>
@@ -98,6 +118,9 @@ const views = {
         </div>
       </div>
     `;
+    if (pushHistory) {
+      history.pushState({ page: 'step1' }, '');
+    }
     document.getElementById('connect-btn').addEventListener('click', () => {
       const url = document.getElementById('server-url').value.trim();
       if (!url) {
@@ -109,19 +132,20 @@ const views = {
     });
   },
 
-  renderLoginStep2() {
+  renderLoginStep2(pushHistory = true) {
     this.removeMenuBar();
     const container = document.getElementById('page-container');
     const serverUrl = api.getBaseUrl();
     container.innerHTML = `
       <div class="screen" id="login-step2">
         <div class="card">
+          <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
+          <h1>Tangerine</h1>
           <div class="server-info">
             <label>Server:</label>
             <span id="server-display">${serverUrl}</span>
             <button id="change-server-btn" class="link-btn">Change</button>
           </div>
-          <h1>Tangerine</h1>
           <form id="login-form">
           <input type="text" id="username" placeholder="Username" autocomplete="username">
           <input type="password" id="password" placeholder="Password" autocomplete="current-password">
@@ -131,6 +155,9 @@ const views = {
       </div>
       </div>
     `;
+    if (pushHistory) {
+      history.pushState({ page: 'step2' }, '');
+    }
     document.getElementById('change-server-btn').addEventListener('click', () => {
       this.renderLoginStep1();
     });
@@ -152,27 +179,39 @@ const views = {
   },
 
   async renderGroups() {
+    // Push browser history entry so back button fires popstate
+    if (this._history.length === 0) {
+      history.pushState({ page: 'groups' }, '');
+    }
     const container = document.getElementById('page-container');
-    container.innerHTML = `<div class="screen" id="groups"><h1>Your Groups</h1><ul id="group-list"></ul></div>`;
-    this.renderMenuBar('Your Groups');
+    container.innerHTML = `<div class="screen" id="groups"><h1>Groups</h1><ul id="group-list"></ul></div>`;
+    this.renderMenuBar('Groups');
     const list = document.getElementById('group-list');
     try {
       const groups = await api.getGroups();
-      console.log('[VIEWS] renderGroups received:', groups);
+      console.log('[VIEWS] renderGroups received:', JSON.stringify(groups));
+
+      // Show debug: raw API response
+      const debugPre = document.createElement('pre');
+      debugPre.style.cssText = 'font-size:10px;background:#ffe0e0;padding:4px;margin:4px 0;max-height:80px;overflow:auto;';
+      debugPre.textContent = 'DEBUG raw: ' + JSON.stringify(groups).slice(0, 600);
+      container.appendChild(debugPre);
+
       groups.forEach(group => {
-        // The Tangerine API returns groups with attributes: { attributes: { name: '...', roles: [...] } }
+        // The Tangerine API returns groups with attributes: { attributes: { name: '<uuid>', label: '...', roles: [...] } }
         const groupId = group.attributes ? group.attributes.name : (group.id || group.name);
-        const groupName = group.attributes ? group.attributes.name : (group.name || group.id || 'Unknown');
-        console.log('[VIEWS] Processing group:', { groupId, groupName, raw: group });
+        const displayName = (group.attributes && group.attributes.label) || (group.attributes && group.attributes.name) || groupId;
+        console.log('[VIEWS] Processing group:', { groupId, displayName, raw: JSON.stringify(group) });
         const li = document.createElement('li');
-        li.textContent = groupName;
+        li.textContent = displayName;
         li.dataset.groupId = groupId;
         li.classList.add('clickable');
         li.addEventListener('click', () => {
           this._history.push('groups');
           this._currentGroupId = groupId;
-          this._currentGroupName = groupName;
-          this.renderForms(groupId, groupName);
+          this._currentGroupName = displayName;
+          history.pushState({ page: 'forms', groupId }, '');
+          this.renderForms(groupId, displayName);
         });
         list.appendChild(li);
       });
@@ -228,7 +267,7 @@ const views = {
           url: url,
           options: {
             showToolbar: true,
-            showURL: true,
+            showURL: false,
             closeButtonText: 'Close',
             toolbarPosition: 0, // TOP
             showNavigationButtons: true,
@@ -254,6 +293,29 @@ const views = {
   },
 
   init() {
+    // Intercept Android back button via browser history (no plugin needed)
+    window.addEventListener('popstate', (e) => {
+      console.log('[VIEWS] popstate, state:', e.state, 'history:', this._history.length);
+      if (this._history.length > 0) {
+        this.goBack();
+      } else if (document.getElementById('group-list')) {
+        // On groups page — confirm logout
+        if (confirm('Log out and return to the login screen?')) {
+          this.logout();
+        } else {
+          // Stay on page — push state back so next back still works
+          history.pushState({ page: 'groups' }, '');
+        }
+      } else if (e.state && e.state.page === 'step1') {
+        // Back pressed on step2 → go to step1 (state already popped, step1 is current)
+        this.renderLoginStep1(false);
+      } else if (e.state && e.state.page === 'step2') {
+        // Edge case: back pressed, step2 is now current (shouldn't normally happen)
+        this.renderLoginStep2(false);
+      }
+      // e.state is null: no more history — next back press will exit the app
+    });
+
     // Check if already logged in
     const token = localStorage.getItem('token');
     const serverUrl = api.getBaseUrl();
@@ -264,5 +326,5 @@ const views = {
     } else {
       this.renderLoginStep1();
     }
-  }
+  },
 };

@@ -1,6 +1,6 @@
 {
-  "appId": "com.thinkdev.tangerine",
-  "appName": "tangerine-data-collector",
+  "appId": "org.tangerinecentral.tangerine",
+  "appName": "Tangerine",
   "webDir": "www",
   "server": {
     "androidScheme": "http"
