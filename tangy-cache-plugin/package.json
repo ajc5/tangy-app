@@ -1,0 +1,34 @@
+{
+  "name": "tangy-cache-plugin",
+  "version": "1.0.0",
+  "description": "Capacitor plugin bridging RESPECT libcache (Distributed Edge HTTP Cache & offline-first sync) to Tangerine Data Collector",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/core": "^8.4.0",
+    "typescript": "^6.0.0"
+  },
+  "files": [
+    "dist/",
+    "android/",
+    "ios/",
+    "src/",
+    "CapacitorPlugin.swift"
+  ]
+}
