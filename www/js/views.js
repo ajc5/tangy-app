@@ -111,7 +111,7 @@ const views = {
       <div class="screen" id="login-step1">
         <div class="card">
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
-          <h1>Connect to a Tangerine Server</h1>
+          <h1>Enter your server URL</h1>
           <input type="text" id="server-url" placeholder="https://your-server.com" value="${api.getBaseUrl()}">
           <button id="connect-btn">Connect</button>
           <div id="step1-error" class="error"></div>
@@ -140,7 +140,6 @@ const views = {
       <div class="screen" id="login-step2">
         <div class="card">
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
-          <h1>Tangerine</h1>
           <div class="server-info">
             <label>Server:</label>
             <span id="server-display">${serverUrl}</span>
@@ -260,10 +259,11 @@ const views = {
       return;
     }
     // Use Capacitor InAppBrowser plugin for embedded WebView (inside app, no CORS)
+    const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
     try {
-      if (Capacitor.isNativePlatform()) {
+      if (isNative && window.Capacitor.Plugins.InAppBrowser) {
         console.log('[VIEWS] Opening form in embedded WebView:', url);
-        Capacitor.Plugins.InAppBrowser.openInWebView({
+        window.Capacitor.Plugins.InAppBrowser.openInWebView({
           url: url,
           options: {
             showToolbar: true,
@@ -282,13 +282,24 @@ const views = {
               isIsolated: true
             }
           }
+        }).catch(err => {
+          console.error('[VIEWS] InAppBrowser openInWebView failed:', err);
+          alert('Failed to open form: ' + (err.message || 'Unknown error'));
         });
+      } else if (isNative) {
+        console.error('[VIEWS] InAppBrowser plugin not available on native platform');
+        alert('InAppBrowser plugin is not available. Please ensure @capacitor/inappbrowser is installed.');
       } else {
-        window.open(url, '_blank');
+        // In a browser, open in a new tab
+        const win = window.open(url, '_blank');
+        if (!win) {
+          console.warn('[VIEWS] Popup blocked, offering fallback');
+          alert('A popup blocker prevented opening the form. Please allow popups for this site, or use this link:\n\n' + url);
+        }
       }
     } catch (e) {
-      console.warn('[VIEWS] InAppBrowser not available, opening in external browser:', e);
-      window.open(url, '_blank');
+      console.error('[VIEWS] Error opening form:', e);
+      alert('Could not open form. Please try again.\n\n' + url);
     }
   },
 

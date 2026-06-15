@@ -201,10 +201,9 @@ li:hover {
 /* ===== Login Logo ===== */
 .login-logo {
   display: block;
-  width: 72px;
-  height: 72px;
+  width: 200px;
+  height: auto;
   margin: 0 auto 16px;
-  border-radius: 12px;
 }
 
 .menu-bar .menu-actions {
