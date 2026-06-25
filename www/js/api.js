@@ -12,6 +12,14 @@ const api = {
     return this.baseUrl || localStorage.getItem('serverUrl') || '';
   },
 
+  getRespectUrl() {
+    return localStorage.getItem('respectUrl') || '';
+  },
+
+  getUsername() {
+    return localStorage.getItem('username') || '';
+  },
+
   async login(username, password) {
     const url = `${this.getBaseUrl()}/login`;
     console.log('[API] POST login request to:', url);
@@ -28,9 +36,13 @@ const api = {
     }
     const result = await response.json();
     console.log('[API] POST login response data:', JSON.stringify(result, null, 2));
-    // Server returns { data: { token: "..." } }
+    // Server returns { data: { token: "...", respectUrl: "..." } }
     if (result.data && result.data.token) {
       localStorage.setItem('token', result.data.token);
+      localStorage.setItem('username', username);
+    }
+    if (result.data && result.data.respectUrl) {
+      localStorage.setItem('respectUrl', result.data.respectUrl);
     }
     return result;
   },
@@ -134,5 +146,7 @@ const api = {
 
   logout() {
     localStorage.removeItem('token');
+    localStorage.removeItem('respectUrl');
+    localStorage.removeItem('username');
   }
 };

@@ -3,6 +3,24 @@ const views = {
   _history: [],
   _currentGroupId: null,
   _currentGroupName: null,
+  _cachedItems: new Set(JSON.parse(localStorage.getItem('tangy-cached-items') || '[]')),
+
+  _markCached(key) {
+    this._cachedItems.add(key);
+    localStorage.setItem('tangy-cached-items', JSON.stringify([...this._cachedItems]));
+  },
+
+  _isCached(key) {
+    return this._cachedItems.has(key);
+  },
+
+  _setDownloadBtnCached(buttonEl) {
+    buttonEl.textContent = '✓';
+    buttonEl.style.color = '#27ae60';
+    buttonEl.style.borderColor = '#27ae60';
+    buttonEl.disabled = false;
+    buttonEl.style.opacity = '1';
+  },
 
   renderMenuBar(title) {
     // Remove existing menu bar if any
@@ -43,12 +61,73 @@ const views = {
     backBtn.addEventListener('click', () => this.goBack());
     actions.appendChild(backBtn);
 
-    // Logout button
-    const logoutBtn = document.createElement('button');
-    logoutBtn.className = 'menu-btn menu-btn-logout';
-    logoutBtn.textContent = 'Logout';
-    logoutBtn.addEventListener('click', () => this.logout());
-    actions.appendChild(logoutBtn);
+    // Hamburger menu toggle
+    const menuToggle = document.createElement('button');
+    menuToggle.className = 'menu-btn menu-hamburger';
+    menuToggle.textContent = '☰';
+    menuToggle.setAttribute('aria-label', 'Menu');
+    actions.appendChild(menuToggle);
+
+    // Dropdown menu (hidden by default)
+    const dropdown = document.createElement('div');
+    dropdown.className = 'menu-dropdown';
+    dropdown.innerHTML = `
+      <div class="dropdown-info">
+        <span class="dropdown-info-label">${api.getUsername() || 'Unknown'}</span>
+        <span class="dropdown-info-url">${api.getBaseUrl() || 'No server'}</span>
+      </div>
+      <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
+      <button class="dropdown-item dropdown-item-logout">Logout</button>
+    `;
+    actions.appendChild(dropdown);
+
+    // Toggle dropdown
+    menuToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dropdown.classList.toggle('open');
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!dropdown.contains(e.target) && e.target !== menuToggle) {
+        dropdown.classList.remove('open');
+      }
+    });
+
+    // Logout action
+    dropdown.querySelector('.dropdown-item-logout').addEventListener('click', () => {
+      dropdown.classList.remove('open');
+      this.logout();
+    });
+ 
+    // Copy RESPECT Link action
+    dropdown.querySelector('.dropdown-item-respect').addEventListener('click', () => {
+      dropdown.classList.remove('open');
+      const link = api.getRespectUrl();
+      if (!link) {
+        alert('No RESPECT URL available. Please log in again.');
+        return;
+      }
+      navigator.clipboard.writeText(link).then(() => {
+        // Brief visual feedback
+        const btn = dropdown.querySelector('.dropdown-item-respect');
+        const origText = btn.textContent;
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { btn.textContent = origText; }, 2000);
+      }).catch(() => {
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = link;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        const btn = dropdown.querySelector('.dropdown-item-respect');
+        const origText = btn.textContent;
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { btn.textContent = origText; }, 2000);
+      });
+    });
 
     menuBar.appendChild(actions);
     document.body.prepend(menuBar);
@@ -196,15 +275,39 @@ const views = {
       debugPre.textContent = 'DEBUG raw: ' + JSON.stringify(groups).slice(0, 600);
       container.appendChild(debugPre);
 
+      // Sort groups alphabetically by display name
+      groups.sort((a, b) => {
+        const nameA = ((a.attributes && a.attributes.label) || (a.attributes && a.attributes.name) || a.attributes?.name || a.id || a.name || '').toLowerCase();
+        const nameB = ((b.attributes && b.attributes.label) || (b.attributes && b.attributes.name) || b.attributes?.name || b.id || b.name || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
       groups.forEach(group => {
         // The Tangerine API returns groups with attributes: { attributes: { name: '<uuid>', label: '...', roles: [...] } }
         const groupId = group.attributes ? group.attributes.name : (group.id || group.name);
         const displayName = (group.attributes && group.attributes.label) || (group.attributes && group.attributes.name) || groupId;
         console.log('[VIEWS] Processing group:', { groupId, displayName, raw: JSON.stringify(group) });
         const li = document.createElement('li');
-        li.textContent = displayName;
-        li.dataset.groupId = groupId;
-        li.classList.add('clickable');
+        li.className = 'list-item';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'list-item-name';
+        nameSpan.textContent = displayName;
+        li.appendChild(nameSpan);
+
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'download-btn';
+        dlBtn.title = 'Cache all forms in this group for offline use';
+        if (this._isCached('group:' + groupId)) {
+          this._setDownloadBtnCached(dlBtn);
+        } else {
+          dlBtn.textContent = '⬇';
+        }
+        dlBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.cacheGroupResources(groupId, dlBtn);
+        });
+        li.appendChild(dlBtn);
+
         li.addEventListener('click', () => {
           this._history.push('groups');
           this._currentGroupId = groupId;
@@ -232,15 +335,39 @@ const views = {
       console.log('[VIEWS] renderForms called with:', { groupId, groupName });
       const forms = await api.getFormsForGroup(groupId);
       console.log('[VIEWS] renderForms received:', forms);
+      // Sort forms alphabetically by form name
+      forms.sort((a, b) => {
+        const nameA = (a.title || a.name || a.id || '').toLowerCase();
+        const nameB = (b.title || b.name || b.id || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
       forms.forEach(form => {
         const formName = form.title || form.name || form.id || 'Unnamed Form';
         const formId = form.id;
         const formUrl = `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
         console.log('[VIEWS] Processing form:', { formName, formId, formUrl, raw: form });
         const li = document.createElement('li');
-        li.textContent = formName;
-        li.dataset.formUrl = formUrl;
-        li.classList.add('clickable');
+        li.className = 'list-item';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'list-item-name';
+        nameSpan.textContent = formName;
+        li.appendChild(nameSpan);
+
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'download-btn';
+        dlBtn.title = 'Cache this form for offline use';
+        if (this._isCached('form:' + formUrl) || this._isCached('group:' + groupId)) {
+          this._setDownloadBtnCached(dlBtn);
+        } else {
+          dlBtn.textContent = '⬇';
+        }
+        dlBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.cacheFormResources(formUrl, dlBtn);
+        });
+        li.appendChild(dlBtn);
+
         li.addEventListener('click', () => this.openFormInWebView(formUrl));
         list.appendChild(li);
       });
@@ -300,6 +427,157 @@ const views = {
     } catch (e) {
       console.error('[VIEWS] Error opening form:', e);
       alert('Could not open form. Please try again.\n\n' + url);
+    }
+  },
+
+  /**
+   * Cache a single form's resources for offline use.
+   * Fetches the form page, parses it for sub-resources (CSS, JS, images),
+   * and downloads them all through the cache service.
+   */
+  async cacheFormResources(formUrl, buttonEl) {
+    const cacheKey = 'form:' + formUrl;
+    buttonEl.textContent = '⏳';
+    buttonEl.disabled = true;
+    buttonEl.style.opacity = '0.7';
+    buttonEl.style.borderColor = '';
+    buttonEl.style.color = '';
+
+    try {
+      const baseUrl = formUrl.replace(/#.*$/, '');
+      const urlsToCache = [baseUrl];
+
+      // Fetch the form page to discover sub-resources
+      try {
+        const response = await httpClient.get(baseUrl, {
+          'Authorization': localStorage.getItem('token')
+        });
+        if (response.ok) {
+          const html = await response.text();
+          const resourceUrls = this._extractResourceUrls(html, baseUrl);
+          urlsToCache.push(...resourceUrls);
+        }
+      } catch (e) {
+        console.warn('[VIEWS] Could not fetch form page for resource discovery:', e);
+      }
+
+      console.log('[VIEWS] Caching form resources:', urlsToCache);
+      await cacheService.downloadAndRetain(
+        urlsToCache.map(url => ({ url, remark: 'form-cache' }))
+      );
+
+      this._markCached(cacheKey);
+      this._setDownloadBtnCached(buttonEl);
+    } catch (err) {
+      console.error('[VIEWS] Failed to cache form:', err);
+      buttonEl.textContent = '✗';
+      buttonEl.style.color = '#e74c3c';
+      buttonEl.style.borderColor = '';
+      setTimeout(() => {
+        buttonEl.textContent = '⬇';
+        buttonEl.style.color = '';
+        buttonEl.disabled = false;
+        buttonEl.style.opacity = '1';
+      }, 2000);
+    }
+  },
+
+  /**
+   * Cache all forms in a group for offline use.
+   */
+  async cacheGroupResources(groupId, buttonEl) {
+    const cacheKey = 'group:' + groupId;
+    buttonEl.textContent = '⏳';
+    buttonEl.disabled = true;
+    buttonEl.style.opacity = '0.7';
+    buttonEl.style.borderColor = '';
+    buttonEl.style.color = '';
+
+    try {
+      const forms = await api.getFormsForGroup(groupId);
+      console.log('[VIEWS] Caching group forms:', forms.length);
+
+      const allUrls = [];
+      for (const form of forms) {
+        const formId = form.id;
+        const formUrl = `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
+        const baseUrl = formUrl.replace(/#.*$/, '');
+        allUrls.push(baseUrl);
+
+        // Discover sub-resources from each form
+        try {
+          const response = await httpClient.get(baseUrl, {
+            'Authorization': localStorage.getItem('token')
+          });
+          if (response.ok) {
+            const html = await response.text();
+            const resourceUrls = this._extractResourceUrls(html, baseUrl);
+            allUrls.push(...resourceUrls);
+          }
+        } catch (e) {
+          console.warn(`[VIEWS] Could not fetch form ${formId} for resource discovery:`, e);
+        }
+
+        // Mark each form as cached so its ✓ shows in the form list
+        this._markCached('form:' + formUrl);
+      }
+
+      // Deduplicate
+      const uniqueUrls = [...new Set(allUrls)];
+      console.log('[VIEWS] Caching group resources:', uniqueUrls.length, 'URLs');
+      await cacheService.downloadAndRetain(
+        uniqueUrls.map(url => ({ url, remark: 'group-cache' }))
+      );
+
+      this._markCached(cacheKey);
+      this._setDownloadBtnCached(buttonEl);
+    } catch (err) {
+      console.error('[VIEWS] Failed to cache group:', err);
+      buttonEl.textContent = '✗';
+      buttonEl.style.color = '#e74c3c';
+      buttonEl.style.borderColor = '';
+      setTimeout(() => {
+        buttonEl.textContent = '⬇';
+        buttonEl.style.color = '';
+        buttonEl.disabled = false;
+        buttonEl.style.opacity = '1';
+      }, 2000);
+    }
+  },
+
+  /**
+   * Extract resource URLs (CSS, JS, images) from an HTML string.
+   * Resolves relative URLs against the given base URL.
+   */
+  _extractResourceUrls(html, baseUrl) {
+    const urls = [];
+    // Match link href (CSS, icons)
+    const linkRegex = /<link[^>]+href=["']([^"']+)["']/gi;
+    let match;
+    while ((match = linkRegex.exec(html)) !== null) {
+      urls.push(this._resolveUrl(match[1], baseUrl));
+    }
+    // Match script src (JS)
+    const scriptRegex = /<script[^>]+src=["']([^"']+)["']/gi;
+    while ((match = scriptRegex.exec(html)) !== null) {
+      urls.push(this._resolveUrl(match[1], baseUrl));
+    }
+    // Match img src
+    const imgRegex = /<img[^>]+src=["']([^"']+)["']/gi;
+    while ((match = imgRegex.exec(html)) !== null) {
+      urls.push(this._resolveUrl(match[1], baseUrl));
+    }
+    return urls;
+  },
+
+  /**
+   * Resolve a potentially relative URL against a base URL.
+   */
+  _resolveUrl(url, baseUrl) {
+    try {
+      return new URL(url, baseUrl).href;
+    } catch (e) {
+      return url;
     }
   },
 
