@@ -1,15 +1,15 @@
 import type { TangyCachePlugin, CacheEntry, PinProgress, CacheStats, OfflineUrl } from './definitions';
 
 /**
- * Web (fallback) implementation using the Cache API.
- * On native platforms, the actual libcache is used.
+ * Web fallback using an in-memory store (session only).
+ *
+ * On native Android/iOS, the Kotlin/Swift implementations handle
+ * disk-based caching via libcache. This web fallback is only used
+ * in browser contexts and does NOT use the PWA Cache API, which
+ * can be unpredictably wiped by the browser/OS.
  */
 export class TangyCacheWeb implements TangyCachePlugin {
-  private cacheName = 'tangy-cache-v1';
-
-  private async ensureCache(): Promise<Cache> {
-    return await caches.open(this.cacheName);
-  }
+  private _entries = new Map<string, { body: string; mimeType: string; headers: Record<string, string> }>();
 
   async store(options: {
     url: string;
@@ -17,82 +17,51 @@ export class TangyCacheWeb implements TangyCachePlugin {
     body: string;
     headers?: Record<string, string>;
   }): Promise<void> {
-    const cache = await this.ensureCache();
-    const headers = new Headers({
-      'Content-Type': options.mimeType,
-      ...options.headers,
+    this._entries.set(options.url, {
+      body: options.body,
+      mimeType: options.mimeType,
+      headers: options.headers || {},
     });
-    const response = new Response(options.body, {
-      headers,
-      status: 200,
-    });
-    await cache.put(options.url, response);
   }
 
   async retrieve(options: {
     url: string;
   }): Promise<{ body: string; mimeType: string; headers: Record<string, string> } | null> {
-    const cache = await this.ensureCache();
-    const response = await cache.match(options.url);
-    if (!response) return null;
-
-    const body = await response.text();
-    const mimeType = response.headers.get('Content-Type') || 'application/octet-stream';
-    const headers: Record<string, string> = {};
-    response.headers.forEach((value, key) => {
-      headers[key] = value;
-    });
-    return { body, mimeType, headers };
+    const entry = this._entries.get(options.url);
+    if (!entry) return null;
+    return { ...entry };
   }
 
   async isCached(options: { url: string }): Promise<{ cached: boolean }> {
-    const cache = await this.ensureCache();
-    const response = await cache.match(options.url);
-    return { cached: !!response };
+    return { cached: this._entries.has(options.url) };
   }
 
   async downloadAndRetain(options: {
     urls: OfflineUrl[];
   }): Promise<{ jobId: string }> {
-    const cache = await this.ensureCache();
     const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     for (const entry of options.urls) {
       try {
         const response = await fetch(entry.url);
         if (response.ok) {
-          await cache.put(entry.url, response);
+          const body = await response.text();
+          const mimeType = response.headers.get('Content-Type') || 'application/octet-stream';
+          this._entries.set(entry.url, { body, mimeType, headers: {} });
         }
       } catch (e) {
         console.warn(`[TangyCache] Failed to cache ${entry.url}:`, e);
       }
     }
 
-    // Store job metadata
-    const metaKey = `__pinjob_${jobId}`;
-    const meta = new Response(
-      JSON.stringify({ urls: options.urls.map((u) => u.url), createdAt: Date.now() }),
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-    await cache.put(metaKey, meta);
-
     return { jobId };
   }
 
-  async release(options: { jobId: string }): Promise<void> {
-    const cache = await this.ensureCache();
-    const metaKey = `__pinjob_${options.jobId}`;
-    const metaResponse = await cache.match(metaKey);
-    if (!metaResponse) return;
-
-    const meta = await metaResponse.json();
-    for (const url of meta.urls) {
-      await cache.delete(url);
-    }
-    await cache.delete(metaKey);
+  async release(_options: { jobId: string }): Promise<void> {
+    // In-memory store — entries evaporate on page unload; no release needed.
   }
 
-  async getPinProgress(options: {
+  async getPinProgress(_options: {
     manifestUrl: string;
   }): Promise<{ progress: PinProgress }> {
     return {
@@ -105,30 +74,24 @@ export class TangyCacheWeb implements TangyCachePlugin {
   }
 
   async getStats(): Promise<{ stats: CacheStats }> {
-    const cache = await this.ensureCache();
-    const keys = await cache.keys();
     let totalSize = 0;
-    for (const request of keys) {
-      const response = await cache.match(request);
-      if (response) {
-        const body = await response.clone().text();
-        totalSize += body.length;
-      }
+    for (const entry of this._entries.values()) {
+      totalSize += entry.body.length;
     }
     return {
       stats: {
-        entryCount: keys.length,
+        entryCount: this._entries.size,
         totalSizeBytes: totalSize,
-        sizeLimitBytes: 0, // unlimited in Cache API
+        sizeLimitBytes: 0,
       },
     };
   }
 
   async clear(): Promise<void> {
-    await caches.delete(this.cacheName);
+    this._entries.clear();
   }
 
-  async setDistributedCachingEnabled(options: {
+  async setDistributedCachingEnabled(_options: {
     enabled: boolean;
   }): Promise<void> {
     console.log('[TangyCache] Distributed caching not available on web');

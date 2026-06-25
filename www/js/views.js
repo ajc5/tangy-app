@@ -16,8 +16,8 @@ const views = {
 
   _setDownloadBtnCached(buttonEl) {
     buttonEl.textContent = '✓';
-    buttonEl.style.color = '#27ae60';
-    buttonEl.style.borderColor = '#27ae60';
+    buttonEl.style.color = '#4caf50';
+    buttonEl.style.borderColor = '';
     buttonEl.disabled = false;
     buttonEl.style.opacity = '1';
   },
@@ -296,7 +296,7 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
-        dlBtn.title = 'Cache all forms in this group for offline use';
+        dlBtn.title = 'Pin all forms in this group for offline use';
         if (this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
@@ -344,7 +344,12 @@ const views = {
       forms.forEach(form => {
         const formName = form.title || form.name || form.id || 'Unnamed Form';
         const formId = form.id;
-        const formUrl = `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
+        // Use OPDS open-access URL when available, otherwise construct from base
+        const formUrl = form._openAccessUrl
+          ? (form._openAccessUrl.startsWith('http')
+              ? form._openAccessUrl
+              : `${api.getBaseUrl()}${form._openAccessUrl}`)
+          : `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
         console.log('[VIEWS] Processing form:', { formName, formId, formUrl, raw: form });
         const li = document.createElement('li');
         li.className = 'list-item';
@@ -356,7 +361,7 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
-        dlBtn.title = 'Cache this form for offline use';
+        dlBtn.title = 'Pin this form for offline use';
         if (this._isCached('form:' + formUrl) || this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
@@ -431,17 +436,13 @@ const views = {
   },
 
   /**
-   * Cache a single form's resources for offline use.
-   * Fetches the form page, parses it for sub-resources (CSS, JS, images),
-   * and downloads them all through the cache service.
+   * Pin a single form's resources for offline use via the Respect proxy.
    */
   async cacheFormResources(formUrl, buttonEl) {
     const cacheKey = 'form:' + formUrl;
     buttonEl.textContent = '⏳';
     buttonEl.disabled = true;
     buttonEl.style.opacity = '0.7';
-    buttonEl.style.borderColor = '';
-    buttonEl.style.color = '';
 
     try {
       const baseUrl = formUrl.replace(/#.*$/, '');
@@ -461,18 +462,18 @@ const views = {
         console.warn('[VIEWS] Could not fetch form page for resource discovery:', e);
       }
 
-      console.log('[VIEWS] Caching form resources:', urlsToCache);
-      await cacheService.downloadAndRetain(
+      console.log('[VIEWS] Pinning form resources via Respect:', urlsToCache.length, 'URLs');
+      const result = await cacheService.downloadAndRetain(
         urlsToCache.map(url => ({ url, remark: 'form-cache' }))
       );
+      console.log('[VIEWS] Pin result:', result.cached, 'cached,', result.failed, 'failed');
 
       this._markCached(cacheKey);
       this._setDownloadBtnCached(buttonEl);
     } catch (err) {
-      console.error('[VIEWS] Failed to cache form:', err);
+      console.error('[VIEWS] Failed to pin form:', err);
       buttonEl.textContent = '✗';
-      buttonEl.style.color = '#e74c3c';
-      buttonEl.style.borderColor = '';
+      buttonEl.style.color = '#ff0000';
       setTimeout(() => {
         buttonEl.textContent = '⬇';
         buttonEl.style.color = '';
@@ -483,28 +484,30 @@ const views = {
   },
 
   /**
-   * Cache all forms in a group for offline use.
+   * Pin all forms in a group for offline use via the Respect proxy.
    */
   async cacheGroupResources(groupId, buttonEl) {
     const cacheKey = 'group:' + groupId;
     buttonEl.textContent = '⏳';
     buttonEl.disabled = true;
     buttonEl.style.opacity = '0.7';
-    buttonEl.style.borderColor = '';
-    buttonEl.style.color = '';
 
     try {
       const forms = await api.getFormsForGroup(groupId);
-      console.log('[VIEWS] Caching group forms:', forms.length);
+      console.log('[VIEWS] Pinning group forms:', forms.length);
 
       const allUrls = [];
       for (const form of forms) {
         const formId = form.id;
-        const formUrl = `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
+        const formUrl = form._openAccessUrl
+          ? (form._openAccessUrl.startsWith('http')
+              ? form._openAccessUrl
+              : `${api.getBaseUrl()}${form._openAccessUrl}`)
+          : `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
         const baseUrl = formUrl.replace(/#.*$/, '');
         allUrls.push(baseUrl);
 
-        // Discover sub-resources from each form
+        // Discover sub-resources
         try {
           const response = await httpClient.get(baseUrl, {
             'Authorization': localStorage.getItem('token')
@@ -518,24 +521,22 @@ const views = {
           console.warn(`[VIEWS] Could not fetch form ${formId} for resource discovery:`, e);
         }
 
-        // Mark each form as cached so its ✓ shows in the form list
         this._markCached('form:' + formUrl);
       }
 
-      // Deduplicate
       const uniqueUrls = [...new Set(allUrls)];
-      console.log('[VIEWS] Caching group resources:', uniqueUrls.length, 'URLs');
-      await cacheService.downloadAndRetain(
+      console.log('[VIEWS] Pinning group resources via Respect:', uniqueUrls.length, 'URLs');
+      const result = await cacheService.downloadAndRetain(
         uniqueUrls.map(url => ({ url, remark: 'group-cache' }))
       );
+      console.log('[VIEWS] Pin result:', result.cached, 'cached,', result.failed, 'failed');
 
       this._markCached(cacheKey);
       this._setDownloadBtnCached(buttonEl);
     } catch (err) {
-      console.error('[VIEWS] Failed to cache group:', err);
+      console.error('[VIEWS] Failed to pin group:', err);
       buttonEl.textContent = '✗';
-      buttonEl.style.color = '#e74c3c';
-      buttonEl.style.borderColor = '';
+      buttonEl.style.color = '#ff0000';
       setTimeout(() => {
         buttonEl.textContent = '⬇';
         buttonEl.style.color = '';
@@ -547,22 +548,18 @@ const views = {
 
   /**
    * Extract resource URLs (CSS, JS, images) from an HTML string.
-   * Resolves relative URLs against the given base URL.
    */
   _extractResourceUrls(html, baseUrl) {
     const urls = [];
-    // Match link href (CSS, icons)
     const linkRegex = /<link[^>]+href=["']([^"']+)["']/gi;
     let match;
     while ((match = linkRegex.exec(html)) !== null) {
       urls.push(this._resolveUrl(match[1], baseUrl));
     }
-    // Match script src (JS)
     const scriptRegex = /<script[^>]+src=["']([^"']+)["']/gi;
     while ((match = scriptRegex.exec(html)) !== null) {
       urls.push(this._resolveUrl(match[1], baseUrl));
     }
-    // Match img src
     const imgRegex = /<img[^>]+src=["']([^"']+)["']/gi;
     while ((match = imgRegex.exec(html)) !== null) {
       urls.push(this._resolveUrl(match[1], baseUrl));
@@ -570,9 +567,6 @@ const views = {
     return urls;
   },
 
-  /**
-   * Resolve a potentially relative URL against a base URL.
-   */
   _resolveUrl(url, baseUrl) {
     try {
       return new URL(url, baseUrl).href;
