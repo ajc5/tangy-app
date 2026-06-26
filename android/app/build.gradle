@@ -1,4 +1,5 @@
 apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
 
 android {
     namespace = "org.tangerinecentral.tangerine"
@@ -22,6 +23,13 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
 }
 
 repositories {
@@ -41,6 +49,11 @@ dependencies {
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
     implementation project(':tangy-cache-plugin')
+    implementation 'world.respect:respect-lib-cache-android:0.1.0-SNAPSHOT'
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0'
+    implementation 'com.squareup.okhttp3:okhttp:5.1.0'
+    implementation 'androidx.room:room-runtime:2.8.2'
+    implementation 'androidx.room:room-ktx:2.8.2'
 }
 
 apply from: 'capacitor.build.gradle'

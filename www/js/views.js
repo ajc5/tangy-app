@@ -3,11 +3,11 @@ const views = {
   _history: [],
   _currentGroupId: null,
   _currentGroupName: null,
-  _cachedItems: new Set(JSON.parse(localStorage.getItem('tangy-cached-items') || '[]')),
+  _cachedItems: new Set(JSON.parse(localStorage.getItem('cached-items') || '[]')),
 
   _markCached(key) {
     this._cachedItems.add(key);
-    localStorage.setItem('tangy-cached-items', JSON.stringify([...this._cachedItems]));
+    localStorage.setItem('cached-items', JSON.stringify([...this._cachedItems]));
   },
 
   _isCached(key) {
@@ -390,49 +390,67 @@ const views = {
       alert('No URL available for this form.');
       return;
     }
-    // Use Capacitor InAppBrowser plugin for embedded WebView (inside app, no CORS)
     const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+    console.log('[VIEWS] Opening form:', url);
+
     try {
-      if (isNative && window.Capacitor.Plugins.InAppBrowser) {
-        console.log('[VIEWS] Opening form in embedded WebView:', url);
-        window.Capacitor.Plugins.InAppBrowser.openInWebView({
+      // Prefer TangyCache.openCachedWebView (OkHttp + CacheInterceptor)
+      if (isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.TangyCache
+          && window.Capacitor.Plugins.TangyCache.openCachedWebView) {
+        console.log('[VIEWS] Using cached WebView:', url);
+        window.Capacitor.Plugins.TangyCache.openCachedWebView({
           url: url,
-          options: {
-            showToolbar: true,
-            showURL: false,
-            closeButtonText: 'Close',
-            toolbarPosition: 0, // TOP
-            showNavigationButtons: true,
-            leftToRight: false,
-            clearCache: false,
-            clearSessionCache: false,
-            mediaPlaybackRequiresUserAction: false,
-            android: {
-              allowZoom: true,
-              hardwareBack: true,
-              pauseMedia: true,
-              isIsolated: true
-            }
-          }
+          showToolbar: true,
+          closeButtonText: 'Close'
         }).catch(err => {
-          console.error('[VIEWS] InAppBrowser openInWebView failed:', err);
-          alert('Failed to open form: ' + (err.message || 'Unknown error'));
+          console.error('[VIEWS] cached WebView failed:', err);
+          this._openInAppBrowserFallback(url, isNative);
         });
+      } else if (isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.InAppBrowser) {
+        this._openInAppBrowserFallback(url, isNative);
       } else if (isNative) {
-        console.error('[VIEWS] InAppBrowser plugin not available on native platform');
-        alert('InAppBrowser plugin is not available. Please ensure @capacitor/inappbrowser is installed.');
+        console.error('[VIEWS] No cached WebView or InAppBrowser');
+        alert('No browser plugin available.');
       } else {
-        // In a browser, open in a new tab
         const win = window.open(url, '_blank');
-        if (!win) {
-          console.warn('[VIEWS] Popup blocked, offering fallback');
-          alert('A popup blocker prevented opening the form. Please allow popups for this site, or use this link:\n\n' + url);
-        }
+        if (!win) alert('Popup blocked. Please allow popups for:\n\n' + url);
       }
     } catch (e) {
       console.error('[VIEWS] Error opening form:', e);
-      alert('Could not open form. Please try again.\n\n' + url);
+      alert('Could not open form:\n\n' + url);
     }
+  },
+
+  _openInAppBrowserFallback(url, isNative) {
+    if (!isNative || !window.Capacitor.Plugins.InAppBrowser) {
+      alert('Cannot open form: no browser available.');
+      return;
+    }
+    console.log('[VIEWS] Opening form in InAppBrowser (fallback):', url);
+    window.Capacitor.Plugins.InAppBrowser.openInWebView({
+      url: url,
+      options: {
+        showToolbar: true,
+        showURL: false,
+        closeButtonText: 'Close',
+        toolbarPosition: 0,
+        showNavigationButtons: true,
+        leftToRight: false,
+        clearCache: false,
+        clearSessionCache: false,
+        mediaPlaybackRequiresUserAction: false,
+        android: {
+          allowZoom: true,
+          hardwareBack: true,
+          pauseMedia: true,
+          isIsolated: true
+        }
+      }
+    }).catch(err => {
+      console.error('[VIEWS] InAppBrowser failed:', err);
+      alert('Failed to open form: ' + (err.message || 'Unknown error'));
+    });
   },
 
   /**
@@ -447,22 +465,28 @@ const views = {
     try {
       const baseUrl = formUrl.replace(/#.*$/, '');
       const urlsToCache = [baseUrl];
-
-      // Fetch the form page to discover sub-resources
       try {
         const response = await httpClient.get(baseUrl, {
           'Authorization': localStorage.getItem('token')
         });
         if (response.ok) {
-          const html = await response.text();
-          const resourceUrls = this._extractResourceUrls(html, baseUrl);
-          urlsToCache.push(...resourceUrls);
+          const text = await response.text();
+          const ct = response.headers.get('content-type') || '';
+          // Check if response is a Readium OPDS JSON manifest
+          if (ct.includes('/json') || ct.includes('opds') || text.trim().startsWith('{')) {
+            const resourceUrls = this._extractReadiumResources(text, baseUrl);
+            console.log('[VIEWS] Readium manifest found:', resourceUrls.length, 'resources');
+            urlsToCache.push(...resourceUrls);
+          } else {
+            const resourceUrls = this._extractResourceUrls(text, baseUrl);
+            urlsToCache.push(...resourceUrls);
+          }
         }
       } catch (e) {
         console.warn('[VIEWS] Could not fetch form page for resource discovery:', e);
       }
 
-      console.log('[VIEWS] Pinning form resources via Respect:', urlsToCache.length, 'URLs');
+      console.log('[VIEWS] Pinning form resources via TangyCache:', urlsToCache.length, 'URLs');
       const result = await cacheService.downloadAndRetain(
         urlsToCache.map(url => ({ url, remark: 'form-cache' }))
       );
@@ -513,9 +537,15 @@ const views = {
             'Authorization': localStorage.getItem('token')
           });
           if (response.ok) {
-            const html = await response.text();
-            const resourceUrls = this._extractResourceUrls(html, baseUrl);
-            allUrls.push(...resourceUrls);
+            const text = await response.text();
+            const ct = response.headers.get('content-type') || '';
+            if (ct.includes('/json') || ct.includes('opds') || text.trim().startsWith('{')) {
+              const resourceUrls = this._extractReadiumResources(text, baseUrl);
+              allUrls.push(...resourceUrls);
+            } else {
+              const resourceUrls = this._extractResourceUrls(text, baseUrl);
+              allUrls.push(...resourceUrls);
+            }
           }
         } catch (e) {
           console.warn(`[VIEWS] Could not fetch form ${formId} for resource discovery:`, e);
@@ -565,6 +595,38 @@ const views = {
       urls.push(this._resolveUrl(match[1], baseUrl));
     }
     return urls;
+  },
+
+  /**
+   * Extract resource URLs from a Readium OPDS JSON manifest (resources array + images + links).
+   */
+  _extractReadiumResources(jsonStr, baseUrl) {
+    try {
+      const manifest = JSON.parse(jsonStr);
+      const urls = [];
+      // Resources array
+      if (Array.isArray(manifest.resources)) {
+        for (const res of manifest.resources) {
+          if (res.href) urls.push(this._resolveUrl(res.href, baseUrl));
+        }
+      }
+      // Images array
+      if (Array.isArray(manifest.images)) {
+        for (const img of manifest.images) {
+          if (img.href) urls.push(this._resolveUrl(img.href, baseUrl));
+        }
+      }
+      // Links array (acquisition links)
+      if (Array.isArray(manifest.links)) {
+        for (const link of manifest.links) {
+          if (link.href && link.rel !== 'self') urls.push(this._resolveUrl(link.href, baseUrl));
+        }
+      }
+      return [...new Set(urls)];
+    } catch (e) {
+      console.warn('[VIEWS] Failed to parse Readium manifest:', e.message);
+      return [];
+    }
   },
 
   _resolveUrl(url, baseUrl) {

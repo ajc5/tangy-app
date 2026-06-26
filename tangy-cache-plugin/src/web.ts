@@ -96,4 +96,31 @@ export class TangyCacheWeb implements TangyCachePlugin {
   }): Promise<void> {
     console.log('[TangyCache] Distributed caching not available on web');
   }
+
+  async fetch(options: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+  }): Promise<{ ok: boolean; status: number; body: string; contentType: string }> {
+    const resp = await fetch(options.url, {
+      method: options.method || 'GET',
+      headers: options.headers || {},
+    });
+    const body = await resp.text();
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      body,
+      contentType: resp.headers.get('Content-Type') || 'application/octet-stream',
+    };
+  }
+
+  async openCachedWebView(_options: {
+    url: string;
+    showToolbar?: boolean;
+    closeButtonText?: string;
+  }): Promise<void> {
+    // Web: open in new tab
+    window.open(_options.url, '_blank');
+  }
 }

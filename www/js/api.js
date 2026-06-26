@@ -54,36 +54,36 @@ const api = {
    * Extract the respectToken from the stored OPDS root document or URL.
    */
   _getRespectToken() {
-    const stored = localStorage.getItem('respectUrl');
-    if (!stored) return '';
-
-    // Try parsing as JSON (OPDS root document)
-    try {
-      const parsed = JSON.parse(stored);
-
-      // 1. Extract token from learningUnits URL
-      if (parsed && parsed.learningUnits) {
-        const luUrl = new URL(parsed.learningUnits, this.getBaseUrl());
-        const token = luUrl.searchParams.get('respectToken');
-        if (token) return token;
-      }
-
-      // 2. Extract token from links array (OPDS catalog link)
-      if (parsed && parsed.links && Array.isArray(parsed.links)) {
-        const catalogLink = parsed.links.find(
-          l => l.rel === 'http://opds-spec.org/catalog' && l.href
-        );
-        if (catalogLink) {
-          const linkUrl = new URL(catalogLink.href, this.getBaseUrl());
-          const token = linkUrl.searchParams.get('respectToken');
+    // First, try to get the token from the stored manifest (if already fetched)
+    const manifest = localStorage.getItem('respectManifest');
+    if (manifest) {
+      try {
+        const parsed = JSON.parse(manifest);
+        // 1. Extract token from learningUnits URL
+        if (parsed && parsed.learningUnits) {
+          const luUrl = new URL(parsed.learningUnits, this.getBaseUrl());
+          const token = luUrl.searchParams.get('respectToken');
           if (token) return token;
         }
+        // 2. Extract token from links array (OPDS catalog link)
+        if (parsed && parsed.links && Array.isArray(parsed.links)) {
+          const catalogLink = parsed.links.find(
+            l => l.rel === 'http://opds-spec.org/catalog' && l.href
+          );
+          if (catalogLink) {
+            const linkUrl = new URL(catalogLink.href, this.getBaseUrl());
+            const token = linkUrl.searchParams.get('respectToken');
+            if (token) return token;
+          }
+        }
+      } catch (e) {
+        // Not parseable
       }
-    } catch (e) {
-      // Not JSON — might be a plain URL string
     }
 
-    // Try as a URL string
+    // Fallback: try to extract from respectUrl (URL string)
+    const stored = localStorage.getItem('respectUrl');
+    if (!stored) return '';
     try {
       const url = new URL(stored, this.getBaseUrl());
       return url.searchParams.get('respectToken') || '';
@@ -134,30 +134,29 @@ const api = {
 
   /**
    * Resolve the learningUnits (groups) URL from the stored respectUrl.
-   * The respectUrl in localStorage may be:
-   *   - A JSON object (OPDS root document already fetched)
-   *   - A URL string (manifest endpoint)
    */
   async _resolveLearningUnitsUrl() {
+    // Check if manifest is already cached
+    const manifest = localStorage.getItem('respectManifest');
+    if (manifest) {
+      try {
+        const parsed = JSON.parse(manifest);
+        const result = this._resolveDocLearningUnitsUrl(parsed);
+        if (result === '__GROUPS_IN_MANIFEST__') {
+          return '__GROUPS_IN_MANIFEST__';
+        }
+        if (result) {
+          return result;
+        }
+      } catch (e) {
+        // Not parseable — proceed to fetch
+      }
+    }
+
+    // Fetch the manifest from the stored respectUrl
     const stored = localStorage.getItem('respectUrl');
     if (!stored) return null;
 
-    // Already a JSON object (OPDS root) — extract learning units URL from it
-    try {
-      const parsed = JSON.parse(stored);
-      const result = this._resolveDocLearningUnitsUrl(parsed);
-      if (result === '__GROUPS_IN_MANIFEST__') {
-        // Groups are directly in the manifest — tell getGroups to parse from localStorage
-        return '__GROUPS_IN_MANIFEST__';
-      }
-      if (result) {
-        return result;
-      }
-    } catch (e) {
-      // Not JSON — proceed as URL string
-    }
-
-    // stored is a URL string — fetch the manifest to get the OPDS root
     try {
       console.log('[API] Fetching manifest from respectUrl:', stored);
       const response = await httpClient.get(stored, {
@@ -166,8 +165,8 @@ const api = {
       if (response.ok) {
         const manifest = await response.json();
         console.log('[API] Manifest response:', JSON.stringify(manifest, null, 2).slice(0, 500));
-        // Cache the resolved OPDS root for future use
-        localStorage.setItem('respectUrl', JSON.stringify(manifest));
+        // Cache the resolved OPDS root separately — don't overwrite respectUrl
+        localStorage.setItem('respectManifest', JSON.stringify(manifest));
 
         const result = this._resolveDocLearningUnitsUrl(manifest);
         if (result === '__GROUPS_IN_MANIFEST__') {
@@ -198,18 +197,13 @@ const api = {
     }
     const result = await response.json();
     console.log('[API] POST login response data:', JSON.stringify(result, null, 2));
-    // Server may return { data: { token: "...", respectUrl: ... } }
-    // or { token: "...", respectUrl: ... } (without data wrapper)
-    // respectUrl may be a JSON object (OPDS root) or a URL string
 
-    // Check both result.data (wrapped) and result (unwrapped) for token
     const token = (result.data && result.data.token) || result.token;
     if (token) {
       localStorage.setItem('token', token);
       localStorage.setItem('username', username);
     }
 
-    // Check both result.data and result top-level for respectUrl
     const respectUrlValue = (result.data && result.data.respectUrl) || result.respectUrl;
     if (respectUrlValue) {
       if (typeof respectUrlValue === 'object' && respectUrlValue !== null) {
@@ -230,10 +224,10 @@ const api = {
     if (learningUnitsUrl === '__GROUPS_IN_MANIFEST__') {
       // Groups are directly in the OPDS root stored in localStorage — parse from there
       console.log('[API] Groups found directly in stored manifest');
-      const stored = localStorage.getItem('respectUrl');
-      if (stored) {
+      const manifest = localStorage.getItem('respectManifest');
+      if (manifest) {
         try {
-          data = JSON.parse(stored);
+          data = JSON.parse(manifest);
         } catch (e) {
           data = null;
         }

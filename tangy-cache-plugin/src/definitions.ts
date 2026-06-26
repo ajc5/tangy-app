@@ -32,64 +32,33 @@ export interface OfflineUrl {
 }
 
 export interface TangyCachePlugin {
-  /**
-   * Cache an HTTP response for a given URL. Useful for pre-caching known content.
-   */
-  store(options: {
-    url: string;
-    mimeType: string;
-    body: string;
-    headers?: Record<string, string>;
-  }): Promise<void>;
-
-  /**
-   * Retrieve a cached response. Returns null if not in cache.
-   */
-  retrieve(options: { url: string }): Promise<{
-    body: string;
-    mimeType: string;
-    headers: Record<string, string>;
-  } | null>;
-
-  /**
-   * Check if a URL is cached and ready for offline use.
-   */
+  store(options: { url: string; mimeType: string; body: string; headers?: Record<string, string> }): Promise<void>;
+  retrieve(options: { url: string }): Promise<{ body: string; mimeType: string; headers: Record<string, string> } | null>;
   isCached(options: { url: string }): Promise<{ cached: boolean }>;
-
-  /**
-   * Download and retain a set of URLs for offline use (pin them).
-   * Returns a job ID that can be used to release them later.
-   */
-  downloadAndRetain(options: {
-    urls: OfflineUrl[];
-  }): Promise<{ jobId: string }>;
-
-  /**
-   * Release previously pinned URLs, allowing them to be evicted from cache.
-   */
+  downloadAndRetain(options: { urls: OfflineUrl[] }): Promise<{ jobId: string }>;
   release(options: { jobId: string }): Promise<void>;
-
-  /**
-   * Get the pin/download progress for a specific manifest or job.
-   */
-  getPinProgress(options: {
-    manifestUrl: string;
-  }): Promise<{ progress: PinProgress }>;
-
-  /**
-   * Get overall cache statistics.
-   */
+  getPinProgress(options: { manifestUrl: string }): Promise<{ progress: PinProgress }>;
   getStats(): Promise<{ stats: CacheStats }>;
-
-  /**
-   * Clear the entire cache.
-   */
   clear(): Promise<void>;
+  setDistributedCachingEnabled(options: { enabled: boolean }): Promise<void>;
 
   /**
-   * Enable or disable the distributed (peer-to-peer) cache discovery.
+   * Make an HTTP request through OkHttp with CacheInterceptor (Respect-style).
+   * On native, responses are automatically cached to disk and served offline.
    */
-  setDistributedCachingEnabled(options: {
-    enabled: boolean;
+  fetch(options: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+  }): Promise<{ ok: boolean; status: number; body: string; contentType: string }>;
+
+  /**
+   * Open a URL in an in-app WebView that uses CachingWebViewClient
+   * (OkHttp + CacheInterceptor), ensuring all content is cached for offline use.
+   */
+  openCachedWebView(options: {
+    url: string;
+    showToolbar?: boolean;
+    closeButtonText?: string;
   }): Promise<void>;
 }
