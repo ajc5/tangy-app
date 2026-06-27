@@ -31,28 +31,9 @@ const views = {
     menuBar.id = 'menu-bar';
     menuBar.className = 'menu-bar';
 
-    const actions = document.createElement('div');
-    actions.className = 'menu-actions';
-
-    // Hamburger menu toggle
-    const menuToggle = document.createElement('button');
-    menuToggle.className = 'menu-btn menu-hamburger';
-    menuToggle.textContent = '☰';
-    menuToggle.setAttribute('aria-label', 'Menu');
-    actions.appendChild(menuToggle);
-
-    // Left side: back button + logo + title
+    // Left side: logo + title
     const leftSide = document.createElement('div');
     leftSide.className = 'menu-left';
-
-    // Back button (only enabled if there's history)
-    const backBtn = document.createElement('button');
-    backBtn.className = 'menu-btn menu-back';
-    backBtn.textContent = '←';
-    backBtn.disabled = this._history.length === 0;
-    backBtn.style.opacity = this._history.length === 0 ? '0.5' : '1';
-    backBtn.addEventListener('click', () => this.goBack());
-    leftSide.appendChild(backBtn);
 
     const logoImg = document.createElement('img');
     logoImg.src = 'img/logo-menu.png';
@@ -68,6 +49,25 @@ const views = {
 
     menuBar.appendChild(leftSide);
 
+    const actions = document.createElement('div');
+    actions.className = 'menu-actions';
+
+    // Back button (only enabled if there's history)
+    const backBtn = document.createElement('button');
+    backBtn.className = 'menu-btn';
+    backBtn.textContent = 'Back';
+    backBtn.disabled = this._history.length === 0;
+    backBtn.style.opacity = this._history.length === 0 ? '0.5' : '1';
+    backBtn.addEventListener('click', () => this.goBack());
+    actions.appendChild(backBtn);
+
+    // Hamburger menu toggle
+    const menuToggle = document.createElement('button');
+    menuToggle.className = 'menu-btn menu-hamburger';
+    menuToggle.textContent = '☰';
+    menuToggle.setAttribute('aria-label', 'Menu');
+    actions.appendChild(menuToggle);
+
     // Dropdown menu (hidden by default)
     const dropdown = document.createElement('div');
     dropdown.className = 'menu-dropdown';
@@ -77,6 +77,7 @@ const views = {
         <span class="dropdown-info-url">${api.getBaseUrl() || 'No server'}</span>
       </div>
       <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
+      <button class="dropdown-item dropdown-item-sync">Sync Pending</button>
       <button class="dropdown-item dropdown-item-logout">Logout</button>
     `;
     actions.appendChild(dropdown);

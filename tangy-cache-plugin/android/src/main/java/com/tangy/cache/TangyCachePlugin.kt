@@ -1,7 +1,12 @@
 package com.tangy.cache
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
 import android.view.ViewGroup
@@ -63,6 +68,7 @@ class TangyCachePlugin : Plugin() {
     private val scope = CoroutineScope(Dispatchers.IO)
     private val pinJobs = ConcurrentHashMap<String, PinJob>()
     private var proxyServer: CacheProxyServer? = null
+    private var connectivityCallback: ConnectivityManager.NetworkCallback? = null
 
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -307,18 +313,37 @@ class TangyCachePlugin : Plugin() {
                 if (showToolbar) {
                     val toolbar = LinearLayout(activity).apply {
                         orientation = LinearLayout.HORIZONTAL
-                        setBackgroundColor(Color.parseColor("#3F51B5"))
-                        setPadding(16, 8, 16, 8)
+                        setBackgroundColor(Color.parseColor("#212a3f"))
+                        setPadding(8, 4, 8, 4)
                         layoutParams = LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT,
                             LinearLayout.LayoutParams.WRAP_CONTENT
                         )
                     }
-                    val closeBtn = TextView(activity).apply {
-                        text = closeButtonText
+                    // Back button (left end)
+                    val backBtn = TextView(activity).apply {
+                        text = "\u2190"
                         setTextColor(Color.WHITE)
-                        textSize = 16f
-                        setPadding(8, 8, 8, 8)
+                        textSize = 20f
+                        setPadding(12, 8, 12, 8)
+                        setOnClickListener {
+                            (rootLayout.parent as? ViewGroup)?.removeView(rootLayout)
+                        }
+                    }
+                    toolbar.addView(backBtn)
+                    // Spacer
+                    val spacer = TextView(activity).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                        )
+                    }
+                    toolbar.addView(spacer)
+                    // Close button (right end)
+                    val closeBtn = TextView(activity).apply {
+                        text = "X"
+                        setTextColor(Color.WHITE)
+                        textSize = 18f
+                        setPadding(12, 8, 12, 8)
                         setOnClickListener {
                             (rootLayout.parent as? ViewGroup)?.removeView(rootLayout)
                         }
@@ -649,9 +674,58 @@ class TangyCachePlugin : Plugin() {
         call.resolve()
     }
 
+    override fun load() {
+        super.load()
+        registerConnectivitySync()
+    }
+
     override fun handleOnDestroy() {
         proxyServer?.stop()
+        connectivityCallback?.let {
+            (activity?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+                ?.unregisterNetworkCallback(it)
+        }
         super.handleOnDestroy()
+    }
+
+    private fun registerConnectivitySync() {
+        val cm = activity?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.i(TAG, "Network available — syncing pending submissions")
+                scope.launch {
+                    try {
+                        val files = pendingDir().listFiles()?.filter { it.name.endsWith(".json") } ?: emptyList()
+                        for (file in files) {
+                            try {
+                                val submission = gson.fromJson(
+                                    file.readText(Charsets.UTF_8),
+                                    PendingSubmission::class.java
+                                )
+                                val request = Request.Builder().url(submission.url)
+                                    .method(submission.method, submission.body.toRequestBody(null))
+                                    .apply {
+                                        submission.headers.forEach { (k, v) -> addHeader(k, v) }
+                                    }
+                                    .build()
+                                val response = okHttpClient.newCall(request).execute()
+                                if (response.isSuccessful) file.delete()
+                                response.close()
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Auto-sync failed for ${file.name}: ${e.message}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Auto-sync error", e)
+                    }
+                }
+            }
+        }
+        connectivityCallback = callback
+        val networkRequest = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        cm.registerNetworkCallback(networkRequest, callback)
     }
 
     /**

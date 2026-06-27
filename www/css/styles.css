@@ -400,6 +400,12 @@ li:active {
   background: rgba(255, 255, 255, 0.12);
 }
 
+.menu-back {
+  font-size: 22px !important;
+  padding: 6px 14px !important;
+  line-height: 1 !important;
+}
+
 /* ---- Dropdown Menu (paper-menu style) ---- */
 .menu-dropdown {
   position: absolute;
