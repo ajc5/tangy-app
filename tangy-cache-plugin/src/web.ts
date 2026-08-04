@@ -36,6 +36,14 @@ export class TangyCacheWeb implements TangyCachePlugin {
     return { cached: this._entries.has(options.url) };
   }
 
+  async evict(options: { urls: string[] }): Promise<{ removed: number }> {
+    let removed = 0;
+    for (const url of options.urls) {
+      if (this._entries.delete(url)) removed++;
+    }
+    return { removed };
+  }
+
   async downloadAndRetain(options: {
     urls: OfflineUrl[];
   }): Promise<{ jobId: string }> {
@@ -101,11 +109,17 @@ export class TangyCacheWeb implements TangyCachePlugin {
     url: string;
     method?: string;
     headers?: Record<string, string>;
+    body?: string;
   }): Promise<{ ok: boolean; status: number; body: string; contentType: string }> {
-    const resp = await fetch(options.url, {
-      method: options.method || 'GET',
+    const method = options.method || 'GET';
+    const init: RequestInit = {
+      method,
       headers: options.headers || {},
-    });
+    };
+    if (options.body !== undefined && method !== 'GET' && method !== 'HEAD') {
+      init.body = options.body;
+    }
+    const resp = await fetch(options.url, init);
     const body = await resp.text();
     return {
       ok: resp.ok,

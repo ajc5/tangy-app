@@ -117,6 +117,105 @@ public class TangyCachePlugin: CAPPlugin {
         call.resolve()
     }
 
+    private func cacheFileURL(for urlString: String) -> URL {
+        let fileName = urlString.data(using: .utf8)?.base64EncodedString() ?? UUID().uuidString
+        return cacheDir!.appendingPathComponent(fileName)
+    }
+
+    private func cacheMetaURL(for urlString: String) -> URL {
+        let fileName = urlString.data(using: .utf8)?.base64EncodedString() ?? UUID().uuidString
+        return cacheDir!.appendingPathComponent("\(fileName).meta.json")
+    }
+
+    private func resolveFetch(_ call: CAPPluginCall, status: Int, body: String, contentType: String) {
+        let result: [String: Any] = [
+            "ok": (200..<300).contains(status),
+            "status": status,
+            "body": body,
+            "contentType": contentType
+        ]
+        DispatchQueue.main.async {
+            call.resolve(result)
+        }
+    }
+
+    /**
+     * Native HTTP via URLSession — no CORS. GET responses are cached to disk
+     * and served offline; non-GET requests (login POST, submissions) always
+     * hit the network and are never cached.
+     */
+    @objc func fetch(_ call: CAPPluginCall) {
+        guard let urlString = call.getString("url"), let url = URL(string: urlString) else {
+            call.reject("url is required")
+            return
+        }
+        let method = (call.getString("method", "GET") ?? "GET").uppercased()
+        let body = call.getString("body")
+        let headers = call.getObject("headers")?.reduce(into: [String: String]()) { result, pair in
+            result[pair.key] = pair.value as? String
+        } ?? [:]
+
+        let fileURL = cacheFileURL(for: urlString)
+        let metaURL = cacheMetaURL(for: urlString)
+        let fileManager = FileManager.default
+
+        // GET: serve from disk cache when present (offline support)
+        if method == "GET" && fileManager.fileExists(atPath: fileURL.path) {
+            if let cachedBody = try? String(contentsOf: fileURL, encoding: .utf8) {
+                var mimeType = "application/octet-stream"
+                if let metaData = try? Data(contentsOf: metaURL),
+                   let meta = try? JSONSerialization.jsonObject(with: metaData) as? [String: Any],
+                   let storedMime = meta["mimeType"] as? String {
+                    mimeType = storedMime
+                }
+                resolveFetch(call, status: 200, body: cachedBody, contentType: mimeType)
+                return
+            }
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 30
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        if let body = body, method != "GET" && method != "HEAD" {
+            request.httpBody = body.data(using: .utf8)
+        }
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                // Offline fallback: serve from cache for GET requests
+                if method == "GET", fileManager.fileExists(atPath: fileURL.path),
+                   let cachedBody = try? String(contentsOf: fileURL, encoding: .utf8) {
+                    self.resolveFetch(call, status: 200, body: cachedBody, contentType: "application/octet-stream")
+                } else {
+                    call.reject("Fetch failed: \(error.localizedDescription)")
+                }
+                return
+            }
+
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let contentType = (response as? HTTPURLResponse)?.allHeaderFields["Content-Type"] as? String
+                ?? "application/octet-stream"
+            let bodyString = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+
+            // Cache successful GET responses for offline use
+            if method == "GET", (200..<300).contains(status) {
+                try? bodyString.write(to: fileURL, atomically: true, encoding: .utf8)
+                let meta: [String: Any] = ["mimeType": contentType]
+                if let metaData = try? JSONSerialization.data(withJSONObject: meta) {
+                    try? metaData.write(to: metaURL)
+                }
+            }
+
+            self.resolveFetch(call, status: status, body: bodyString, contentType: contentType)
+        }
+        task.resume()
+    }
+
     @objc func setDistributedCachingEnabled(_ call: CAPPluginCall) {
         // Not available on iOS yet
         call.resolve()

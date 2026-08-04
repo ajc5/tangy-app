@@ -137,24 +137,19 @@ class TangyCachePlugin : Plugin() {
             val request = chain.request()
             val url = request.url.toString()
 
-            // 1. Check disk cache first
-            val cached = retrieveFromDisk(url)
-            if (cached != null) {
-                val (body, meta) = cached
-                Log.d(TAG, "CacheInterceptor HIT $url")
-                return Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK (cached)")
-                    .header("Content-Type", meta.mimeType)
-                    .header("X-Cache", "HIT")
-                    .body(body.toResponseBody(meta.mimeType.toMediaType()))
-                    .build()
+            // Only GET requests are cached. POST/PUT/DELETE (login, form
+            // submissions, mutations) must always hit the network and must
+            // never read from or write to the GET cache.
+            if (request.method != "GET") {
+                return chain.proceed(request)
             }
 
-            // 2. Try network — if it fails, fall back to cache (offline resilience)
-            Log.d(TAG, "CacheInterceptor MISS $url — trying network")
+            // Network-first: always try the network when online so we get
+            // FRESH data (group/form lists, OPDS feeds, form HTML). The disk
+            // cache is used as an OFFLINE fallback (and for manual pins).
+            // This prevents stale responses — e.g. a group that no longer
+            // exists, or an empty form list — from being served forever.
+            Log.d(TAG, "CacheInterceptor FETCH $url — trying network")
             return try {
                 val networkResponse = chain.proceed(request)
 
@@ -259,8 +254,9 @@ class TangyCachePlugin : Plugin() {
     @PluginMethod
     fun fetch(call: PluginCall) {
         val url = call.getString("url") ?: return call.reject("url is required")
-        val method = call.getString("method", "GET") ?: "GET"
+        val method = call.getString("method", "GET")?.uppercase() ?: "GET"
         val headersObj = call.getObject("headers")
+        val body = call.getString("body")
 
         scope.launch {
             try {
@@ -271,6 +267,16 @@ class TangyCachePlugin : Plugin() {
                             val key = iter.next()
                             obj.getString(key)?.let { header(key, it) }
                         }
+                    }
+                    // Attach body for state-changing methods (login, submissions).
+                    // Non-GET requests bypass the cache inside CacheInterceptor.
+                    if (body != null && method != "GET" && method != "HEAD") {
+                        val contentType = headersObj?.getString("Content-Type")
+                            ?: headersObj?.getString("content-type")
+                            ?: "application/json"
+                        method(method, body.toRequestBody(contentType.toMediaType()))
+                    } else {
+                        method(method, null)
                     }
                 }.build()
 
@@ -446,6 +452,28 @@ class TangyCachePlugin : Plugin() {
         call.resolve(JSObject().apply {
             put("cached", File(cacheDir(), filename).exists())
         })
+    }
+
+    @PluginMethod
+    fun evict(call: PluginCall) {
+        val urlsArray = call.getArray("urls") ?: return call.reject("urls is required")
+        scope.launch {
+            try {
+                var removed = 0
+                for (i in 0 until urlsArray.length()) {
+                    val url = urlsArray.optString(i)
+                    if (url.isEmpty()) continue
+                    val filename = urlToFilename(url)
+                    if (File(cacheDir(), filename).delete()) removed++
+                    File(metaDir(), "$filename.json").delete()
+                }
+                Log.d(TAG, "evict removed $removed entries")
+                call.resolve(JSObject().apply { put("removed", removed) })
+            } catch (e: Exception) {
+                Log.e(TAG, "evict error", e)
+                call.reject("Evict failed: ${e.message}")
+            }
+        }
     }
 
     @PluginMethod

@@ -35,6 +35,11 @@ export interface TangyCachePlugin {
   store(options: { url: string; mimeType: string; body: string; headers?: Record<string, string> }): Promise<void>;
   retrieve(options: { url: string }): Promise<{ body: string; mimeType: string; headers: Record<string, string> } | null>;
   isCached(options: { url: string }): Promise<{ cached: boolean }>;
+  /**
+   * Remove specific URLs from the disk cache (uncache). No-op for URLs
+   * that are not currently cached.
+   */
+  evict(options: { urls: string[] }): Promise<{ removed: number }>;
   downloadAndRetain(options: { urls: OfflineUrl[] }): Promise<{ jobId: string }>;
   release(options: { jobId: string }): Promise<void>;
   getPinProgress(options: { manifestUrl: string }): Promise<{ progress: PinProgress }>;
@@ -44,12 +49,15 @@ export interface TangyCachePlugin {
 
   /**
    * Make an HTTP request through OkHttp with CacheInterceptor (Respect-style).
-   * On native, responses are automatically cached to disk and served offline.
+   * On native, GET responses are automatically cached to disk and served
+   * offline. Non-GET requests (POST/PUT/DELETE) always hit the network and
+   * are never cached.
    */
   fetch(options: {
     url: string;
     method?: string;
     headers?: Record<string, string>;
+    body?: string;
   }): Promise<{ ok: boolean; status: number; body: string; contentType: string }>;
 
   /**

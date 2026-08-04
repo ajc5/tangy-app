@@ -30,6 +30,32 @@ function extractFormId(identifier) {
   }
 }
 
+/**
+ * Recent login tracking: saves a history of servers and usernames so users
+ * can quickly reconnect. Stored in localStorage under 'recentLogins' as an
+ * array of { server, username, ts } entries (most recent first, deduped, capped).
+ */
+const RECENT_LOGINS_KEY = 'recentLogins';
+const MAX_RECENT_LOGINS = 10;
+
+function _getRecentLogins() {
+  try {
+    const raw = localStorage.getItem(RECENT_LOGINS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function _saveRecentLogins(list) {
+  localStorage.setItem(RECENT_LOGINS_KEY, JSON.stringify(list));
+}
+
+function _normalizeServer(server) {
+  return String(server || '').replace(/\/+$/, '').toLowerCase();
+}
+
 const api = {
   baseUrl: '',
 
@@ -48,6 +74,70 @@ const api = {
 
   getUsername() {
     return localStorage.getItem('username') || '';
+  },
+
+  /**
+   * Record a server connection (e.g. user tapped Connect on the server screen).
+   */
+  recordServer(server) {
+    this._addRecentLogin(server, '');
+  },
+
+  /**
+   * Record a successful login for a server + username.
+   */
+  recordLogin(server, username) {
+    this._addRecentLogin(server, username);
+  },
+
+  _addRecentLogin(server, username) {
+    const normalized = server ? server.replace(/\/+$/, '') : '';
+    if (!normalized) return;
+    let list = _getRecentLogins();
+    // Remove any prior entry for the same (server, username) pair
+    list = list.filter(
+      (e) => e.server !== normalized || (e.username || '') !== (username || '')
+    );
+    // If a real username is provided, drop the bare server-only entry
+    if (username) {
+      list = list.filter((e) => e.server !== normalized || e.username);
+    }
+    list.unshift({ server: normalized, username: username || '', ts: Date.now() });
+    _saveRecentLogins(list.slice(0, MAX_RECENT_LOGINS));
+  },
+
+  /**
+   * Unique servers from the recent logins list (most recent first).
+   */
+  getRecentServers() {
+    return _getRecentLogins()
+      .map((e) => e.server)
+      .filter(Boolean)
+      .filter((server, i, arr) => arr.indexOf(server) === i);
+  },
+
+  /**
+   * Usernames used on a given server (most recent first, unique).
+   */
+  getRecentUsernames(server) {
+    const target = _normalizeServer(server);
+    return _getRecentLogins()
+      .filter((e) => _normalizeServer(e.server) === target && e.username)
+      .map((e) => e.username)
+      .filter((u, i, arr) => arr.indexOf(u) === i);
+  },
+
+  /**
+   * Clear ALL saved login data: the recent servers/usernames history plus the
+   * currently stored session (server URL, username, token, respect data).
+   */
+  clearAllLoginData() {
+    localStorage.removeItem('recentLogins');
+    localStorage.removeItem('serverUrl');
+    localStorage.removeItem('username');
+    localStorage.removeItem('token');
+    localStorage.removeItem('respectUrl');
+    localStorage.removeItem('respectManifest');
   },
 
   /**
@@ -133,6 +223,25 @@ const api = {
   },
 
   /**
+   * True if the stored OPDS root belongs to the given server base URL.
+   * A manifest cached from an earlier login or a different server must not
+   * drive the UI (it can list groups/forms that no longer exist).
+   */
+  _manifestBelongsToServer(manifest, baseUrl) {
+    if (!manifest || !baseUrl) return false;
+    let baseHost = '';
+    try { baseHost = new URL(baseUrl).host; } catch (e) { return false; }
+    const candidates = [
+      manifest.learningUnits,
+      manifest.defaultLaunchUri,
+      ...(Array.isArray(manifest.links) ? manifest.links.map(l => l.href) : [])
+    ].filter(Boolean);
+    return candidates.some(c => {
+      try { return new URL(c, baseUrl).host === baseHost; } catch (e) { return false; }
+    });
+  },
+
+  /**
    * Resolve the learningUnits (groups) URL from the stored respectUrl.
    */
   async _resolveLearningUnitsUrl() {
@@ -141,12 +250,19 @@ const api = {
     if (manifest) {
       try {
         const parsed = JSON.parse(manifest);
-        const result = this._resolveDocLearningUnitsUrl(parsed);
-        if (result === '__GROUPS_IN_MANIFEST__') {
-          return '__GROUPS_IN_MANIFEST__';
-        }
-        if (result) {
-          return result;
+        // Only trust a cached manifest that belongs to the CURRENT server.
+        // A stale copy from an earlier login/server must be ignored.
+        if (this._manifestBelongsToServer(parsed, this.getBaseUrl())) {
+          const result = this._resolveDocLearningUnitsUrl(parsed);
+          if (result === '__GROUPS_IN_MANIFEST__') {
+            return '__GROUPS_IN_MANIFEST__';
+          }
+          if (result) {
+            return result;
+          }
+        } else {
+          console.log('[API] Stored manifest is from a different server — discarding stale copy');
+          localStorage.removeItem('respectManifest');
         }
       } catch (e) {
         // Not parseable — proceed to fetch
@@ -202,6 +318,7 @@ const api = {
     if (token) {
       localStorage.setItem('token', token);
       localStorage.setItem('username', username);
+      this.recordLogin(this.getBaseUrl(), username);
     }
 
     const respectUrlValue = (result.data && result.data.respectUrl) || result.respectUrl;
@@ -212,6 +329,12 @@ const api = {
         localStorage.setItem('respectUrl', respectUrlValue);
       }
     }
+
+    // Invalidate any cached OPDS root from a previous login/server. It will
+    // be re-fetched from the fresh respectUrl above, so we never show groups
+    // or forms from an old server or an outdated server state.
+    localStorage.removeItem('respectManifest');
+
     return result;
   },
 
@@ -350,5 +473,6 @@ const api = {
     localStorage.removeItem('token');
     localStorage.removeItem('respectUrl');
     localStorage.removeItem('username');
+    localStorage.removeItem('respectManifest');
   }
 };

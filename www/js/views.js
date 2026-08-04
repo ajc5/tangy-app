@@ -10,6 +10,11 @@ const views = {
     localStorage.setItem('cached-items', JSON.stringify([...this._cachedItems]));
   },
 
+  _unmarkCached(key) {
+    this._cachedItems.delete(key);
+    localStorage.setItem('cached-items', JSON.stringify([...this._cachedItems]));
+  },
+
   _isCached(key) {
     return this._cachedItems.has(key);
   },
@@ -22,7 +27,79 @@ const views = {
     buttonEl.style.opacity = '1';
   },
 
-  renderMenuBar(title) {
+  _setDownloadBtnUncached(buttonEl) {
+    buttonEl.textContent = '⬇';
+    buttonEl.style.color = '';
+    buttonEl.style.borderColor = '';
+    buttonEl.disabled = false;
+    buttonEl.style.opacity = '1';
+  },
+
+  // ── Pinned-URL tracking (so uncaching can evict the right disk entries) ──
+
+  _getPinnedUrls(key) {
+    try {
+      const map = JSON.parse(localStorage.getItem('cached-urls') || '{}');
+      return map[key] || [];
+    } catch (e) { return []; }
+  },
+
+  _savePinnedUrls(key, urls) {
+    const map = JSON.parse(localStorage.getItem('cached-urls') || '{}');
+    map[key] = Array.isArray(urls) ? urls : [];
+    localStorage.setItem('cached-urls', JSON.stringify(map));
+  },
+
+  _removePinnedUrls(key) {
+    const map = JSON.parse(localStorage.getItem('cached-urls') || '{}');
+    delete map[key];
+    localStorage.setItem('cached-urls', JSON.stringify(map));
+  },
+
+  _getGroupFormKeys(groupId) {
+    try {
+      const map = JSON.parse(localStorage.getItem('cached-group-forms') || '{}');
+      return map[groupId] || [];
+    } catch (e) { return []; }
+  },
+
+  _saveGroupFormKeys(groupId, keys) {
+    const map = JSON.parse(localStorage.getItem('cached-group-forms') || '{}');
+    map[groupId] = Array.isArray(keys) ? keys : [];
+    localStorage.setItem('cached-group-forms', JSON.stringify(map));
+  },
+
+  _removeGroupFormKeys(groupId) {
+    const map = JSON.parse(localStorage.getItem('cached-group-forms') || '{}');
+    delete map[groupId];
+    localStorage.setItem('cached-group-forms', JSON.stringify(map));
+  },
+
+  // Remove URLs from the TangyCache disk cache (native). Web is a no-op.
+  async _evictUrls(urls) {
+    const unique = [...new Set((urls || []).filter(Boolean))];
+    if (unique.length === 0) return;
+    const plugin = window.Capacitor?.Plugins?.TangyCache;
+    if (plugin && plugin.evict) {
+      try {
+        await plugin.evict({ urls: unique });
+      } catch (e) {
+        console.warn('[VIEWS] evict failed:', e);
+      }
+    }
+  },
+
+  /**
+   * Shared header bar used on both logged-in and login screens.
+   *
+   * @param {Object}   [options]
+   * @param {string}   [options.title]      Optional title shown next to the logo (logged-in pages).
+   * @param {boolean}  [options.showBack]   Show the back button (logged-in pages).
+   * @param {boolean}  [options.loginMode]  Render the login dropdown (Clear saved data only)
+   *                                        instead of the logged-in dropdown
+   *                                        (RESPECT link / Clear saved data / Logout).
+   */
+  renderHeader({ title = '', showBack = false, loginMode = false } = {}) {
     // Remove existing menu bar if any
     const existingMenu = document.getElementById('menu-bar');
     if (existingMenu) existingMenu.remove();
@@ -31,54 +108,113 @@ const views = {
     menuBar.id = 'menu-bar';
     menuBar.className = 'menu-bar';
 
+    // Left side: (back button) + logo + (title)
+    const leftSide = document.createElement('div');
+    leftSide.className = 'menu-left';
+
+    if (showBack) {
+      // Back button (only enabled if there's history)
+      const backBtn = document.createElement('button');
+      backBtn.className = 'menu-btn menu-back';
+      backBtn.textContent = '←';
+      backBtn.disabled = this._history.length === 0;
+      backBtn.style.opacity = this._history.length === 0 ? '0.5' : '1';
+      backBtn.addEventListener('click', () => this.goBack());
+      leftSide.appendChild(backBtn);
+    }
+
+    const logoImg = document.createElement('img');
+    logoImg.src = 'img/logo-menu.png';
+    logoImg.alt = 'Tangerine';
+    logoImg.className = 'menu-logo';
+    if (!loginMode) {
+      logoImg.addEventListener('click', () => this.goHome());
+    }
+    leftSide.appendChild(logoImg);
+
+    if (title) {
+      const titleEl = document.createElement('span');
+      titleEl.className = 'menu-title';
+      titleEl.textContent = title;
+      leftSide.appendChild(titleEl);
+    }
+
+    menuBar.appendChild(leftSide);
+
+    // Right side: hamburger toggle + dropdown menu
     const actions = document.createElement('div');
     actions.className = 'menu-actions';
 
-    // Hamburger menu toggle
     const menuToggle = document.createElement('button');
     menuToggle.className = 'menu-btn menu-hamburger';
     menuToggle.textContent = '☰';
     menuToggle.setAttribute('aria-label', 'Menu');
     actions.appendChild(menuToggle);
 
-    // Left side: back button + logo + title
-    const leftSide = document.createElement('div');
-    leftSide.className = 'menu-left';
-
-    // Back button (only enabled if there's history)
-    const backBtn = document.createElement('button');
-    backBtn.className = 'menu-btn menu-back';
-    backBtn.textContent = '←';
-    backBtn.disabled = this._history.length === 0;
-    backBtn.style.opacity = this._history.length === 0 ? '0.5' : '1';
-    backBtn.addEventListener('click', () => this.goBack());
-    leftSide.appendChild(backBtn);
-
-    const logoImg = document.createElement('img');
-    logoImg.src = 'img/logo-menu.png';
-    logoImg.alt = 'Tangerine';
-    logoImg.className = 'menu-logo';
-    logoImg.addEventListener('click', () => this.goHome());
-    leftSide.appendChild(logoImg);
-
-    const titleEl = document.createElement('span');
-    titleEl.className = 'menu-title';
-    titleEl.textContent = title || 'Tangerine';
-    leftSide.appendChild(titleEl);
-
-    menuBar.appendChild(leftSide);
-
-    // Dropdown menu (hidden by default)
     const dropdown = document.createElement('div');
     dropdown.className = 'menu-dropdown';
-    dropdown.innerHTML = `
-      <div class="dropdown-info">
-        <span class="dropdown-info-label">${api.getUsername() || 'Unknown'}</span>
-        <span class="dropdown-info-url">${api.getBaseUrl() || 'No server'}</span>
-      </div>
-      <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
-      <button class="dropdown-item dropdown-item-logout">Logout</button>
-    `;
+
+    if (loginMode) {
+      // Login screen: only "Clear Saved Servers & Usernames" is available.
+      dropdown.innerHTML = `
+        <div class="dropdown-info">
+          <span class="dropdown-info-label">Login</span>
+          <span class="dropdown-info-url">${api.getBaseUrl() ? 'Server: ' + api.getBaseUrl() : 'No server selected'}</span>
+        </div>
+        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
+      `;
+      dropdown.querySelector('.dropdown-item-clear').addEventListener('click', () => {
+        dropdown.classList.remove('open');
+        this.clearLoginData();
+      });
+    } else {
+      // Logged-in screen: RESPECT link, Clear saved data, Logout.
+      dropdown.innerHTML = `
+        <div class="dropdown-info">
+          <span class="dropdown-info-label">${api.getUsername() || 'Unknown'}</span>
+          <span class="dropdown-info-url">${api.getBaseUrl() || 'No server'}</span>
+        </div>
+        <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
+        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
+        <button class="dropdown-item dropdown-item-logout">Logout</button>
+      `;
+      dropdown.querySelector('.dropdown-item-logout').addEventListener('click', () => {
+        dropdown.classList.remove('open');
+        this.logout();
+      });
+      dropdown.querySelector('.dropdown-item-clear').addEventListener('click', () => {
+        dropdown.classList.remove('open');
+        this.clearLoginData();
+      });
+      dropdown.querySelector('.dropdown-item-respect').addEventListener('click', () => {
+        dropdown.classList.remove('open');
+        const link = api.getRespectUrl();
+        if (!link) {
+          alert('No RESPECT URL available. Please log in again.');
+          return;
+        }
+        navigator.clipboard.writeText(link).then(() => {
+          // Brief visual feedback
+          const btn = dropdown.querySelector('.dropdown-item-respect');
+          const origText = btn.textContent;
+          btn.textContent = '✓ Copied!';
+          setTimeout(() => { btn.textContent = origText; }, 2000);
+        }).catch(() => {
+          // Fallback for older browsers
+          const textArea = document.createElement('textarea');
+          textArea.value = link;
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textArea);
+          const btn = dropdown.querySelector('.dropdown-item-respect');
+          const origText = btn.textContent;
+          btn.textContent = '✓ Copied!';
+          setTimeout(() => { btn.textContent = origText; }, 2000);
+        });
+      });
+    }
+
     actions.appendChild(dropdown);
 
     // Toggle dropdown
@@ -92,41 +228,6 @@ const views = {
       if (!dropdown.contains(e.target) && e.target !== menuToggle) {
         dropdown.classList.remove('open');
       }
-    });
-
-    // Logout action
-    dropdown.querySelector('.dropdown-item-logout').addEventListener('click', () => {
-      dropdown.classList.remove('open');
-      this.logout();
-    });
- 
-    // Copy RESPECT Link action
-    dropdown.querySelector('.dropdown-item-respect').addEventListener('click', () => {
-      dropdown.classList.remove('open');
-      const link = api.getRespectUrl();
-      if (!link) {
-        alert('No RESPECT URL available. Please log in again.');
-        return;
-      }
-      navigator.clipboard.writeText(link).then(() => {
-        // Brief visual feedback
-        const btn = dropdown.querySelector('.dropdown-item-respect');
-        const origText = btn.textContent;
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => { btn.textContent = origText; }, 2000);
-      }).catch(() => {
-        // Fallback for older browsers
-        const textArea = document.createElement('textarea');
-        textArea.value = link;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-        const btn = dropdown.querySelector('.dropdown-item-respect');
-        const origText = btn.textContent;
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => { btn.textContent = origText; }, 2000);
-      });
     });
 
     menuBar.appendChild(actions);
@@ -183,15 +284,106 @@ const views = {
       this.renderLoginStep1();
     }
   },
-  renderLoginStep1(pushHistory = true) {
+
+  /**
+   * Clear every saved server/username plus the current session, then return
+   * to a clean login screen. Invoked from the burger menu on any screen.
+   */
+  clearLoginData() {
+    if (!confirm('Clear all saved servers and usernames?\n\nThis will remove stored login history and log you out.')) {
+      return;
+    }
+    this._history = [];
+    this._currentGroupId = null;
+    this._currentGroupName = null;
+    api.clearAllLoginData();
     this.removeMenuBar();
+    if (history.length > 1) {
+      history.go(-(history.length - 1));
+      setTimeout(() => this.renderLoginStep1(), 50);
+      return;
+    }
+    this.renderLoginStep1();
+  },
+
+  /**
+   * Populate the recent-servers suggestion dropdown shown below the server URL
+   * text field. Uses a custom list so placement is controlled (native Android
+   * <datalist> popups render above the field and cannot be repositioned).
+   */
+  _renderRecentServers() {
+    const input = document.getElementById('server-url');
+    const list = document.getElementById('server-suggest-list');
+    if (!input || !list) return;
+    const servers = api.getRecentServers();
+    list.innerHTML = '';
+    servers.forEach((server) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'suggest-item';
+      item.textContent = server;
+      item.title = server;
+      item.addEventListener('click', () => {
+        api.setBaseUrl(server);
+        this.renderLoginStep2();
+      });
+      list.appendChild(item);
+    });
+    // Keep the input focused while the user taps an item, so the dropdown
+    // doesn't dismiss before the tap lands.
+    list.addEventListener('pointerdown', (e) => e.preventDefault());
+    input.addEventListener('focus', () => {
+      if (list.children.length) list.classList.add('open');
+    });
+    input.addEventListener('blur', () => {
+      setTimeout(() => list.classList.remove('open'), 150);
+    });
+  },
+
+  /**
+   * Populate the recent-usernames suggestion dropdown shown below the username
+   * text field.
+   */
+  _renderRecentUsernames() {
+    const input = document.getElementById('username');
+    const list = document.getElementById('username-suggest-list');
+    if (!input || !list) return;
+    const usernames = api.getRecentUsernames(api.getBaseUrl());
+    list.innerHTML = '';
+    usernames.forEach((username) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'suggest-item';
+      item.textContent = username;
+      item.addEventListener('click', () => {
+        input.value = username;
+        list.classList.remove('open');
+        const passwordInput = document.getElementById('password');
+        if (passwordInput) passwordInput.focus();
+      });
+      list.appendChild(item);
+    });
+    list.addEventListener('pointerdown', (e) => e.preventDefault());
+    input.addEventListener('focus', () => {
+      if (list.children.length) list.classList.add('open');
+    });
+    input.addEventListener('blur', () => {
+      setTimeout(() => list.classList.remove('open'), 150);
+    });
+  },
+
+  renderLoginStep1(pushHistory = true) {
+    this.renderHeader({ loginMode: true });
     const container = document.getElementById('page-container');
     container.innerHTML = `
       <div class="screen" id="login-step1">
         <div class="card">
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
           <h1>Enter your server URL</h1>
-          <input type="text" id="server-url" placeholder="https://your-server.com" value="${api.getBaseUrl()}">
+          <div class="input-suggest">
+            <input type="text" id="server-url" placeholder="https://your-server.com" value="${api.getBaseUrl()}" autocomplete="off">
+            <div class="suggest-list" id="server-suggest-list"></div>
+          </div>
           <button id="connect-btn">Connect</button>
           <div id="step1-error" class="error"></div>
         </div>
@@ -209,10 +401,11 @@ const views = {
       api.setBaseUrl(url);
       this.renderLoginStep2();
     });
+    this._renderRecentServers();
   },
 
   renderLoginStep2(pushHistory = true) {
-    this.removeMenuBar();
+    this.renderHeader({ loginMode: true });
     const container = document.getElementById('page-container');
     const serverUrl = api.getBaseUrl();
     container.innerHTML = `
@@ -225,7 +418,10 @@ const views = {
             <button id="change-server-btn" class="link-btn">Change</button>
           </div>
           <form id="login-form">
-          <input type="text" id="username" placeholder="Username" autocomplete="username">
+          <div class="input-suggest">
+            <input type="text" id="username" placeholder="Username" autocomplete="off">
+            <div class="suggest-list" id="username-suggest-list"></div>
+          </div>
           <input type="password" id="password" placeholder="Password" autocomplete="current-password">
             <button type="submit" id="login-btn">Login</button>
           </form>
@@ -254,6 +450,7 @@ const views = {
         document.getElementById('step2-error').textContent = err.message;
       }
     });
+    this._renderRecentUsernames();
   },
 
   async renderGroups() {
@@ -263,7 +460,7 @@ const views = {
     }
     const container = document.getElementById('page-container');
     container.innerHTML = `<div class="screen" id="groups"><h1>Groups</h1><ul id="group-list"></ul></div>`;
-    this.renderMenuBar('Groups');
+    this.renderHeader({ title: 'Groups', showBack: true });
     const list = document.getElementById('group-list');
     try {
       const groups = await api.getGroups();
@@ -329,7 +526,7 @@ const views = {
   async renderForms(groupId, groupName) {
     const container = document.getElementById('page-container');
     container.innerHTML = `<div class="screen" id="forms"><h1>Forms - ${groupName}</h1><ul id="form-list"></ul></div>`;
-    this.renderMenuBar(`Forms - ${groupName}`);
+    this.renderHeader({ title: `Forms - ${groupName}`, showBack: true });
     const list = document.getElementById('form-list');
     try {
       console.log('[VIEWS] renderForms called with:', { groupId, groupName });
@@ -454,10 +651,31 @@ const views = {
   },
 
   /**
-   * Pin a single form's resources for offline use via the Respect proxy.
+   * Toggle offline caching for a single form: pin it if not already cached,
+   * or uncache (evict from disk) if it is.
    */
   async cacheFormResources(formUrl, buttonEl) {
     const cacheKey = 'form:' + formUrl;
+
+    // Toggle — already cached: uncache it.
+    if (this._isCached(cacheKey)) {
+      console.log('[VIEWS] Uncaching form:', formUrl);
+      buttonEl.textContent = '⏳';
+      buttonEl.disabled = true;
+      buttonEl.style.opacity = '0.7';
+      try {
+        await this._evictUrls(this._getPinnedUrls(cacheKey));
+        this._unmarkCached(cacheKey);
+        this._removePinnedUrls(cacheKey);
+        this._setDownloadBtnUncached(buttonEl);
+        console.log('[VIEWS] Uncached form:', formUrl);
+      } catch (err) {
+        console.error('[VIEWS] Failed to uncache form:', err);
+        this._setDownloadBtnCached(buttonEl);
+      }
+      return;
+    }
+
     buttonEl.textContent = '⏳';
     buttonEl.disabled = true;
     buttonEl.style.opacity = '0.7';
@@ -493,6 +711,7 @@ const views = {
       console.log('[VIEWS] Pin result:', result.cached, 'cached,', result.failed, 'failed');
 
       this._markCached(cacheKey);
+      this._savePinnedUrls(cacheKey, result.urls);
       this._setDownloadBtnCached(buttonEl);
     } catch (err) {
       console.error('[VIEWS] Failed to pin form:', err);
@@ -508,10 +727,43 @@ const views = {
   },
 
   /**
-   * Pin all forms in a group for offline use via the Respect proxy.
+   * Toggle offline caching for a whole group: pin all forms if not already
+   * cached, or uncache (evict from disk + unmark) the group and its forms.
    */
   async cacheGroupResources(groupId, buttonEl) {
     const cacheKey = 'group:' + groupId;
+
+    // Toggle — already cached: uncache the group and its child forms.
+    if (this._isCached(cacheKey)) {
+      console.log('[VIEWS] Uncaching group:', groupId);
+      buttonEl.textContent = '⏳';
+      buttonEl.disabled = true;
+      buttonEl.style.opacity = '0.7';
+      try {
+        // Evict every URL pinned for the group or any of its child forms.
+        const urlsToEvict = [...this._getPinnedUrls(cacheKey)];
+        this._getGroupFormKeys(groupId).forEach(k => {
+          urlsToEvict.push(...this._getPinnedUrls(k));
+        });
+
+        await this._evictUrls(urlsToEvict);
+
+        this._unmarkCached(cacheKey);
+        this._getGroupFormKeys(groupId).forEach(k => {
+          this._unmarkCached(k);
+          this._removePinnedUrls(k);
+        });
+        this._removePinnedUrls(cacheKey);
+        this._removeGroupFormKeys(groupId);
+        this._setDownloadBtnUncached(buttonEl);
+        console.log('[VIEWS] Uncached group:', groupId);
+      } catch (err) {
+        console.error('[VIEWS] Failed to uncache group:', err);
+        this._setDownloadBtnCached(buttonEl);
+      }
+      return;
+    }
+
     buttonEl.textContent = '⏳';
     buttonEl.disabled = true;
     buttonEl.style.opacity = '0.7';
@@ -521,6 +773,7 @@ const views = {
       console.log('[VIEWS] Pinning group forms:', forms.length);
 
       const allUrls = [];
+      const childFormKeys = [];
       for (const form of forms) {
         const formId = form.id;
         const formUrl = form._openAccessUrl
@@ -552,6 +805,7 @@ const views = {
         }
 
         this._markCached('form:' + formUrl);
+        childFormKeys.push('form:' + formUrl);
       }
 
       const uniqueUrls = [...new Set(allUrls)];
@@ -562,6 +816,8 @@ const views = {
       console.log('[VIEWS] Pin result:', result.cached, 'cached,', result.failed, 'failed');
 
       this._markCached(cacheKey);
+      this._savePinnedUrls(cacheKey, result.urls);
+      this._saveGroupFormKeys(groupId, childFormKeys);
       this._setDownloadBtnCached(buttonEl);
     } catch (err) {
       console.error('[VIEWS] Failed to pin group:', err);

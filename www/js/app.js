@@ -94,6 +94,13 @@ async function handleDeepLink(urlString) {
       }
     }
 
+    // Record the deep-link login in the recent servers/usernames list
+    const deepLinkUsername = localStorage.getItem('username');
+    const deepLinkServer = api.getBaseUrl();
+    if (deepLinkUsername && deepLinkServer) {
+      api.recordLogin(deepLinkServer, deepLinkUsername);
+    }
+
     // Navigate to groups view
     views.goHome();
   } catch (err) {
