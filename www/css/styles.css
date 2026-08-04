@@ -564,6 +564,17 @@ li:active {
   border-top: 1px solid rgba(0, 0, 0, 0.06);
 }
 
+/* ---- Cached-form auto-refresh indicator ---- */
+.refresh-indicator {
+  margin: 8px 0 12px;
+  padding: 10px 14px;
+  border-radius: 4px;
+  background: rgba(60, 91, 141, 0.08);
+  color: var(--tangy-primary-color);
+  font-size: 13px;
+  text-align: center;
+}
+
 /* ---- Material Icons ---- */
 .material-icons {
   vertical-align: middle;

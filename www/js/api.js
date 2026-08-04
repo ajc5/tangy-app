@@ -38,6 +38,12 @@ function extractFormId(identifier) {
 const RECENT_LOGINS_KEY = 'recentLogins';
 const MAX_RECENT_LOGINS = 10;
 
+// Always-available demo login, shown in the server/user dropdowns even after
+// the recent servers/usernames history is cleared.
+const DEMO_SERVER = 'http://35.209.168.52';
+const DEMO_USERNAME = 'appuser';
+const DEMO_PASSWORD = 'Password1!';
+
 function _getRecentLogins() {
   try {
     const raw = localStorage.getItem(RECENT_LOGINS_KEY);
@@ -77,6 +83,27 @@ const api = {
   },
 
   /**
+   * The demo password for the demo user (appuser) on the demo server, or null
+   * for any other user/server. Used to auto-fill the login form.
+   */
+  getDemoPassword(username) {
+    if (
+      username === DEMO_USERNAME &&
+      _normalizeServer(this.getBaseUrl()) === _normalizeServer(DEMO_SERVER)
+    ) {
+      return DEMO_PASSWORD;
+    }
+    return null;
+  },
+
+  /**
+   * Whether the given server URL is the always-available demo server.
+   */
+  isDemoServer(server) {
+    return !!server && _normalizeServer(server) === _normalizeServer(DEMO_SERVER);
+  },
+
+  /**
    * Record a server connection (e.g. user tapped Connect on the server screen).
    */
   recordServer(server) {
@@ -110,10 +137,13 @@ const api = {
    * Unique servers from the recent logins list (most recent first).
    */
   getRecentServers() {
-    return _getRecentLogins()
+    const recent = _getRecentLogins()
       .map((e) => e.server)
-      .filter(Boolean)
-      .filter((server, i, arr) => arr.indexOf(server) === i);
+      .filter(Boolean);
+    // Demo server is always available (deduped), shown first as the default.
+    return [DEMO_SERVER, ...recent]
+      .filter((server, i, arr) =>
+        arr.findIndex((s) => _normalizeServer(s) === _normalizeServer(server)) === i);
   },
 
   /**
@@ -121,10 +151,15 @@ const api = {
    */
   getRecentUsernames(server) {
     const target = _normalizeServer(server);
-    return _getRecentLogins()
+    const recent = _getRecentLogins()
       .filter((e) => _normalizeServer(e.server) === target && e.username)
       .map((e) => e.username)
       .filter((u, i, arr) => arr.indexOf(u) === i);
+    // Demo username is always available for the demo server, shown first.
+    if (target === _normalizeServer(DEMO_SERVER)) {
+      return [DEMO_USERNAME, ...recent].filter((u, i, arr) => arr.indexOf(u) === i);
+    }
+    return recent;
   },
 
   /**
@@ -438,6 +473,7 @@ const api = {
           id: formId,
           title: (pub.metadata && pub.metadata.title) || formId || 'Unnamed Form',
           name: (pub.metadata && pub.metadata.title) || formId,
+          modified: (pub.metadata && pub.metadata.modified) || null,
           _openAccessUrl: openAccessLink
             ? openAccessLink.href
             : null

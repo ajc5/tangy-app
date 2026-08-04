@@ -75,6 +75,31 @@ const views = {
     localStorage.setItem('cached-group-forms', JSON.stringify(map));
   },
 
+  // ── Cached-form "modified" tracking (from the OPDS publications feed) ──
+  // Used to decide whether a cached form is stale when the forms list loads.
+
+  _getFormModified(formUrl) {
+    try {
+      const map = JSON.parse(localStorage.getItem('cached-form-mods') || '{}');
+      return map[formUrl] || null;
+    } catch (e) { return null; }
+  },
+
+  _saveFormModified(formUrl, modified) {
+    if (!modified) return;
+    const map = JSON.parse(localStorage.getItem('cached-form-mods') || '{}');
+    map[formUrl] = modified;
+    localStorage.setItem('cached-form-mods', JSON.stringify(map));
+  },
+
+  _removeFormModified(formUrl) {
+    const map = JSON.parse(localStorage.getItem('cached-form-mods') || '{}');
+    if (formUrl in map) {
+      delete map[formUrl];
+      localStorage.setItem('cached-form-mods', JSON.stringify(map));
+    }
+  },
+
   // Remove URLs from the TangyCache disk cache (native). Web is a no-op.
   async _evictUrls(urls) {
     const unique = [...new Set((urls || []).filter(Boolean))];
@@ -156,10 +181,11 @@ const views = {
 
     if (loginMode) {
       // Login screen: only "Clear Saved Servers & Usernames" is available.
+      const baseUrl = api.getBaseUrl();
       dropdown.innerHTML = `
         <div class="dropdown-info">
           <span class="dropdown-info-label">Login</span>
-          <span class="dropdown-info-url">${api.getBaseUrl() ? 'Server: ' + api.getBaseUrl() : 'No server selected'}</span>
+          <span class="dropdown-info-url">${baseUrl ? 'Server: ' + baseUrl + (api.isDemoServer(baseUrl) ? ' (demo)' : '') : 'No server selected'}</span>
         </div>
         <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
       `;
@@ -169,10 +195,11 @@ const views = {
       });
     } else {
       // Logged-in screen: RESPECT link, Clear saved data, Logout.
+      const baseUrl = api.getBaseUrl();
       dropdown.innerHTML = `
         <div class="dropdown-info">
           <span class="dropdown-info-label">${api.getUsername() || 'Unknown'}</span>
-          <span class="dropdown-info-url">${api.getBaseUrl() || 'No server'}</span>
+          <span class="dropdown-info-url">${baseUrl ? baseUrl + (api.isDemoServer(baseUrl) ? ' (demo)' : '') : 'No server'}</span>
         </div>
         <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
         <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
@@ -321,7 +348,7 @@ const views = {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'suggest-item';
-      item.textContent = server;
+      item.textContent = api.isDemoServer(server) ? `${server} (demo)` : server;
       item.title = server;
       item.addEventListener('click', () => {
         api.setBaseUrl(server);
@@ -359,7 +386,12 @@ const views = {
         input.value = username;
         list.classList.remove('open');
         const passwordInput = document.getElementById('password');
-        if (passwordInput) passwordInput.focus();
+        if (passwordInput) {
+          // Auto-fill the demo password for the demo user on the demo server.
+          const demoPassword = api.getDemoPassword(username);
+          if (demoPassword) passwordInput.value = demoPassword;
+          passwordInput.focus();
+        }
       });
       list.appendChild(item);
     });
@@ -414,7 +446,7 @@ const views = {
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
           <div class="server-info">
             <label>Server:</label>
-            <span id="server-display">${serverUrl}</span>
+            <span id="server-display">${serverUrl}${api.isDemoServer(serverUrl) ? ' (demo)' : ''}</span>
             <button id="change-server-btn" class="link-btn">Change</button>
           </div>
           <form id="login-form">
@@ -448,6 +480,13 @@ const views = {
         this.renderGroups();
       } catch (err) {
         document.getElementById('step2-error').textContent = err.message;
+      }
+    });
+    // Auto-fill the demo password when the demo user is typed on the demo server.
+    document.getElementById('username').addEventListener('input', (e) => {
+      const demoPassword = api.getDemoPassword(e.target.value.trim());
+      if (demoPassword) {
+        document.getElementById('password').value = demoPassword;
       }
     });
     this._renderRecentUsernames();
@@ -566,7 +605,7 @@ const views = {
         }
         dlBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.cacheFormResources(formUrl, dlBtn);
+          this.cacheFormResources(formUrl, dlBtn, form.modified);
         });
         li.appendChild(dlBtn);
 
@@ -576,6 +615,10 @@ const views = {
       if (forms.length === 0) {
         container.innerHTML += `<div class="error">No forms found for this group</div>`;
       }
+
+      // Check the OPDS `modified` dates for cached forms and refresh any that
+      // changed on the server (fire-and-forget; skips cleanly when offline).
+      this._refreshCachedOnLoad(groupId, forms);
     } catch (err) {
       console.log('[VIEWS] renderForms error:', err);
       container.innerHTML += `<div class="error">${err.message}</div>`;
@@ -654,7 +697,7 @@ const views = {
    * Toggle offline caching for a single form: pin it if not already cached,
    * or uncache (evict from disk) if it is.
    */
-  async cacheFormResources(formUrl, buttonEl) {
+  async cacheFormResources(formUrl, buttonEl, modified) {
     const cacheKey = 'form:' + formUrl;
 
     // Toggle — already cached: uncache it.
@@ -667,6 +710,7 @@ const views = {
         await this._evictUrls(this._getPinnedUrls(cacheKey));
         this._unmarkCached(cacheKey);
         this._removePinnedUrls(cacheKey);
+        this._removeFormModified(formUrl);
         this._setDownloadBtnUncached(buttonEl);
         console.log('[VIEWS] Uncached form:', formUrl);
       } catch (err) {
@@ -712,6 +756,7 @@ const views = {
 
       this._markCached(cacheKey);
       this._savePinnedUrls(cacheKey, result.urls);
+      this._saveFormModified(formUrl, modified);
       this._setDownloadBtnCached(buttonEl);
     } catch (err) {
       console.error('[VIEWS] Failed to pin form:', err);
@@ -752,6 +797,7 @@ const views = {
         this._getGroupFormKeys(groupId).forEach(k => {
           this._unmarkCached(k);
           this._removePinnedUrls(k);
+          this._removeFormModified(k.slice('form:'.length));
         });
         this._removePinnedUrls(cacheKey);
         this._removeGroupFormKeys(groupId);
@@ -805,6 +851,7 @@ const views = {
         }
 
         this._markCached('form:' + formUrl);
+        this._saveFormModified(formUrl, form.modified);
         childFormKeys.push('form:' + formUrl);
       }
 
@@ -830,6 +877,116 @@ const views = {
         buttonEl.style.opacity = '1';
       }, 2000);
     }
+  },
+
+  /**
+   * When the forms list loads, compare each cached form's OPDS `modified` date
+   * against what we last cached. Only forms whose server `modified` is newer
+   * are re-downloaded (network-first updates the disk cache), so unchanged
+   * forms are skipped. Fire-and-forget and offline-safe.
+   */
+  async _refreshCachedOnLoad(groupId, forms) {
+    if (!navigator.onLine) return; // skip when clearly offline
+    const groupKey = 'group:' + groupId;
+    const groupCached = this._isCached(groupKey);
+    const stale = [];
+
+    (forms || []).forEach(form => {
+      const formId = form.id;
+      const formUrl = form._openAccessUrl
+        ? (form._openAccessUrl.startsWith('http')
+            ? form._openAccessUrl
+            : `${api.getBaseUrl()}${form._openAccessUrl}`)
+        : `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
+      const key = 'form:' + formUrl;
+      // Only consider forms already cached (individually or via a cached group).
+      if (!this._isCached(key) && !groupCached) return;
+
+      const serverModifiedStr = form.modified;
+      const cachedModifiedStr = this._getFormModified(formUrl);
+      const serverModified = serverModifiedStr ? new Date(serverModifiedStr).getTime() : null;
+      const cachedModified = cachedModifiedStr ? new Date(cachedModifiedStr).getTime() : null;
+      // Refresh when we have no record (legacy cache) or the server is newer.
+      const needsRefresh = !cachedModified || (serverModified && serverModified > cachedModified);
+      if (needsRefresh) stale.push({ formUrl, key, modified: form.modified });
+    });
+
+    if (stale.length === 0) return;
+
+    const indicator = this._showRefreshIndicator(stale.length);
+    let refreshed = 0;
+    let failed = 0;
+    const CONCURRENCY = 2;
+    const queue = [...stale];
+
+    const worker = async () => {
+      while (queue.length) {
+        const { formUrl, key, modified } = queue.shift();
+        try {
+          const baseUrl = formUrl.replace(/#.*$/, '');
+          const urlsToCache = [baseUrl];
+          try {
+            const response = await httpClient.get(baseUrl, {
+              'Authorization': localStorage.getItem('token')
+            });
+            if (response.ok) {
+              const text = await response.text();
+              const ct = response.headers.get('content-type') || '';
+              if (ct.includes('/json') || ct.includes('opds') || text.trim().startsWith('{')) {
+                urlsToCache.push(...this._extractReadiumResources(text, baseUrl));
+              } else {
+                urlsToCache.push(...this._extractResourceUrls(text, baseUrl));
+              }
+            }
+          } catch (e) {
+            console.warn('[VIEWS] Refresh: could not fetch form page:', e);
+          }
+          const result = await cacheService.downloadAndRetain(
+            [...new Set(urlsToCache)].map(url => ({ url, remark: 'refresh-cache' }))
+          );
+          this._savePinnedUrls(key, result.urls);
+          this._saveFormModified(formUrl, modified);
+          if (groupCached) this._markCached(key); // group members count as cached
+          if (result.cached > 0) refreshed++; else failed++;
+        } catch (e) {
+          failed++;
+          console.warn('[VIEWS] Refresh failed for', formUrl, e);
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, stale.length) }, worker));
+
+    // A cached group's pinned set is the union of its forms' pinned URLs.
+    if (groupCached) {
+      const memberKeys = this._getGroupFormKeys(groupId);
+      this._savePinnedUrls(groupKey, memberKeys.reduce(
+        (acc, k) => acc.concat(this._getPinnedUrls(k)), []
+      ));
+    }
+
+    this._hideRefreshIndicator(indicator, refreshed, failed);
+  },
+
+  _showRefreshIndicator(count) {
+    const el = document.createElement('div');
+    el.className = 'refresh-indicator';
+    el.textContent = `↻ Updating ${count} cached form${count === 1 ? '' : 's'}…`;
+    const container = document.getElementById('page-container');
+    if (container) container.prepend(el);
+    return el;
+  },
+
+  _hideRefreshIndicator(el, refreshed, failed) {
+    if (!el || !el.parentNode) return;
+    if (refreshed > 0) {
+      el.textContent = '✓ Cached forms updated to latest version';
+      el.style.background = 'rgba(76, 175, 80, 0.14)';
+    } else {
+      el.textContent = '↷ Could not refresh — cached forms kept as-is';
+      el.style.background = 'rgba(0, 0, 0, 0.06)';
+    }
+    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 2500);
   },
 
   /**
