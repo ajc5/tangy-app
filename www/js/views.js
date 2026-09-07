@@ -19,6 +19,20 @@ const views = {
     return this._cachedItems.has(key);
   },
 
+  // Ask the native TangyCache whether a URL is actually stored on disk.
+  async _urlIsCached(url) {
+    const plugin = window.Capacitor?.Plugins?.TangyCache;
+    if (plugin && plugin.isCached) {
+      try {
+        const result = await plugin.isCached({ url });
+        return !!result.cached;
+      } catch (e) {
+        console.warn('[VIEWS] isCached failed:', e);
+      }
+    }
+    return false;
+  },
+
   _setDownloadBtnCached(buttonEl) {
     buttonEl.textContent = '✓';
     buttonEl.style.color = '#4caf50';
@@ -703,47 +717,30 @@ const views = {
 
     try {
       const baseUrl = formUrl.replace(/#.*$/, '');
-      const urlsToCache = [baseUrl];
-      try {
-        const response = await httpClient.get(baseUrl, {
-          'Authorization': localStorage.getItem('token')
-        });
-        if (response.ok) {
-          const text = await response.text();
-          const ct = response.headers.get('content-type') || '';
-          // Check if response is a Readium OPDS JSON manifest
-          if (ct.includes('/json') || ct.includes('opds') || text.trim().startsWith('{')) {
-            const resourceUrls = this._extractReadiumResources(text, baseUrl);
-            console.log('[VIEWS] Readium manifest found:', resourceUrls.length, 'resources');
-            urlsToCache.push(...resourceUrls);
-          } else {
-            const resourceUrls = this._extractResourceUrls(text, baseUrl);
-            urlsToCache.push(...resourceUrls);
-          }
-        }
-      } catch (e) {
-        console.warn('[VIEWS] Could not fetch form page for resource discovery:', e);
-      }
-
+      const urlsToCache = await this._discoverAllFormResourceUrls(formUrl, baseUrl);
       console.log('[VIEWS] Pinning form resources via TangyCache:', urlsToCache.length, 'URLs');
       const result = await cacheService.downloadAndRetain(
         urlsToCache.map(url => ({ url, remark: 'form-cache' }))
       );
       console.log('[VIEWS] Pin result:', result.cached, 'cached,', result.failed, 'failed');
 
-      this._markCached(cacheKey);
-      this._savePinnedUrls(cacheKey, result.urls);
-      this._setDownloadBtnCached(buttonEl);
+      // Only mark the form cached when content actually landed on disk.
+      // A false tick on failure (e.g. offline) would ALSO make the next
+      // connected tap UNCACHE instead of cache (this button is a toggle).
+      const baseCached = (await this._urlIsCached(baseUrl)) || result.urls.includes(baseUrl);
+      if (result.cached > 0 && baseCached) {
+        this._markCached(cacheKey);
+        this._savePinnedUrls(cacheKey, result.urls);
+        this._setDownloadBtnCached(buttonEl);
+      } else {
+        console.warn('[VIEWS] Pin did not cache anything (offline?); leaving uncached.');
+        this._setDownloadBtnUncached(buttonEl);
+        alert('Could not cache this form for offline use. Check your connection and try again.');
+      }
     } catch (err) {
       console.error('[VIEWS] Failed to pin form:', err);
-      buttonEl.textContent = '✗';
-      buttonEl.style.color = '#ff0000';
-      setTimeout(() => {
-        buttonEl.textContent = '⬇';
-        buttonEl.style.color = '';
-        buttonEl.disabled = false;
-        buttonEl.style.opacity = '1';
-      }, 2000);
+      this._setDownloadBtnUncached(buttonEl);
+      alert('Could not cache this form for offline use: ' + ((err && err.message) || err));
     }
   },
 
@@ -851,6 +848,55 @@ const views = {
         buttonEl.style.opacity = '1';
       }, 2000);
     }
+  },
+
+  /**
+   * Gather every URL that must be cached for a form to open OFFLINE.
+   * Preferred source: the server's OPDS publication detail (the full `resources`
+   * array the server publishes for the form - app shell, app-config, tangy-form,
+   * media) which is the same set the RESPECT launcher pre-caches. Falls back to
+   * crawling the HTML shell for directly referenced assets.
+   */
+  async _discoverAllFormResourceUrls(formUrl, baseUrl) {
+    const urls = [baseUrl];
+    const releaseMatch = formUrl.match(/\/releases\/prod\/online-survey-apps\/([^/]+)\/([^/]+)\//);
+    if (releaseMatch) {
+      const groupId = releaseMatch[1];
+      const formId = releaseMatch[2];
+      const token = (api._getRespectToken ? api._getRespectToken() : '') || '';
+      const detailUrl = `${api.getBaseUrl()}/opds/groups/${groupId}/${formId}` +
+        (token ? `?respectToken=${token}` : '');
+      try {
+        const resp = await httpClient.get(detailUrl, { 'Authorization': localStorage.getItem('token') });
+        if (resp.ok) {
+          const resourceUrls = this._extractReadiumResources(await resp.text(), baseUrl);
+          if (resourceUrls.length > 0) {
+            console.log('[VIEWS] OPDS detail provided', resourceUrls.length, 'resources');
+            return [...new Set(urls.concat(resourceUrls))];
+          }
+        } else {
+          console.warn('[VIEWS] OPDS detail fetch status', resp.status);
+        }
+      } catch (e) {
+        console.warn('[VIEWS] OPDS detail fetch failed, falling back to HTML crawl:', e.message);
+      }
+    }
+    // Fallback: crawl the HTML shell for directly referenced assets.
+    try {
+      const response = await httpClient.get(baseUrl, { 'Authorization': localStorage.getItem('token') });
+      if (response.ok) {
+        const text = await response.text();
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('/json') || ct.includes('opds') || text.trim().startsWith('{')) {
+          urls.push(...this._extractReadiumResources(text, baseUrl));
+        } else {
+          urls.push(...this._extractResourceUrls(text, baseUrl));
+        }
+      }
+    } catch (e) {
+      console.warn('[VIEWS] Could not fetch form page for resource discovery:', e);
+    }
+    return [...new Set(urls)];
   },
 
   /**

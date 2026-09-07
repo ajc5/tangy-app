@@ -40,4 +40,4 @@ api-calls.txt
 # Tangy cache plugin build artifacts
 tangy-cache-plugin/dist/
 tangy-cache-plugin/android/build/
-tangy-cache-plugin/.gradle/
+tangy-cache-plugin/android/.gradle/

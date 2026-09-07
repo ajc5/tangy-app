@@ -44,6 +44,7 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -52,6 +53,8 @@ import kotlinx.serialization.json.Json
 import world.respect.lib.dataloadstate.DataReadyState
 import world.respect.lib.xapi.model.XapiStatement
 import world.respect.xapi.ipc.client.XapiIpcClientBuilder
+import org.openeel.libcache.ipc.client.HttpIpcClient
+import org.openeel.libcache.ipc.client.HttpIpcClientBuilder
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -88,6 +91,15 @@ data class PendingSubmission(
     val method: String,
     val headers: Map<String, String>,
     val body: String,
+    val createdAt: Long
+)
+
+data class PendingXapi(
+    val id: String,
+    val endpoint: String,
+    val auth: String,
+    val ipcPackage: String,
+    val statementsJson: String,
     val createdAt: Long
 )
 
@@ -138,6 +150,25 @@ class TangyCachePlugin : Plugin() {
             .build()
     }
 
+    // OkHttp chain used by RESPECT-launched lesson WebViews: the launcher's IPC
+    // cache is consulted FIRST (only-if-cached); misses fall through to the
+    // network-first TangyCache interceptor below (order matters: the first
+    // interceptor added runs first).
+    private val respectOkHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor(RespectIpcCacheInterceptor())
+            .addInterceptor(CacheInterceptor())
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
+    // HttpIpcClient bound to the RESPECT launcher (built lazily, one per session).
+    private var ipcHttpClient: HttpIpcClient? = null
+    private var ipcHttpClientPackage: String? = null
+
     private fun cacheDir(): File {
         val dir = File(activity?.cacheDir, "tangy-cache")
         if (!dir.exists()) dir.mkdirs()
@@ -156,8 +187,33 @@ class TangyCachePlugin : Plugin() {
         return dir
     }
 
+    // Directory for xAPI statement batches that could not be delivered to the
+    // RESPECT launcher (IPC unreachable / offline) at submit time. Replayed when
+    // connectivity returns.
+    private fun xapiPendingDir(): File {
+        val dir = File(activity?.filesDir, "tangy-pending-xapi")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun parseHeaderMap(headersJson: String): Map<String, String> {
+        if (headersJson.isBlank()) return emptyMap()
+        return try {
+            gson.fromJson(headersJson, object : TypeToken<Map<String, String>>() {}.type)
+                ?: emptyMap()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
     private fun urlToFilename(url: String): String {
-        val hash = url.toByteArray(Charsets.UTF_8).let {
+        // The URL fragment is client-side only and is never sent to the server,
+        // so requests that differ only by "#fragment" (e.g. a pinned form URL vs
+        // the lesson WebView's "…/#/form/<id>" document URL) MUST map to the SAME
+        // cache entry. Otherwise a pinned form can't be served offline when the
+        // WebView opens it (which always navigates with the fragment).
+        val normalizedUrl = url.substringBefore('#')
+        val hash = normalizedUrl.toByteArray(Charsets.UTF_8).let {
             val md = MessageDigest.getInstance("SHA-256")
             md.digest(it).joinToString("") { "%02x".format(it) }
         }
@@ -265,6 +321,87 @@ class TangyCachePlugin : Plugin() {
         }
     }
 
+    /**
+     * OkHttp interceptor used ONLY for RESPECT-launched lessons. It asks the
+     * RESPECT launcher (via HTTP-over-IPC, `Cache-Control: only-if-cached`) for
+     * the resource first so content the launcher downloaded plays OFFLINE from
+     * RESPECT's own cache. When the launcher cannot satisfy the request (cache
+     * miss / service not reachable) we fall through to the normal network-first
+     * TangyCache interceptor, so direct (non-RESPECT) use is unchanged.
+     */
+    inner class RespectIpcCacheInterceptor : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val pkg = currentIpcPackage
+            if (pkg.isNullOrBlank()) {
+                return chain.proceed(request)
+            }
+            val client = ensureIpcClient(pkg) ?: return chain.proceed(request)
+            return try {
+                val ipcRequest = request.newBuilder()
+                    .header("Cache-Control", "only-if-cached")
+                    .build()
+                val ipcResponse = client.newCall(ipcRequest).execute()
+                if (ipcResponse.isSuccessful) {
+                    Log.d(TAG, "RespectIpcCache HIT ${request.url} via $pkg")
+                    ipcResponse
+                } else {
+                    Log.d(TAG, "RespectIpcCache MISS ${request.url} (${ipcResponse.code}) - falling back")
+                    ipcResponse.close()
+                    chain.proceed(request)
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "RespectIpcCache error for ${request.url}: ${e.message} - falling back to own cache/network")
+                chain.proceed(request)
+            }
+        }
+    }
+
+    @Synchronized
+    private fun ensureIpcClient(pkg: String): HttpIpcClient? {
+        ipcHttpClient?.let { existing ->
+            if (ipcHttpClientPackage == pkg) return existing
+            try {
+                existing.close()
+            } catch (_: Exception) {
+            }
+            ipcHttpClient = null
+            ipcHttpClientPackage = null
+        }
+        val act = activity ?: return null
+        return try {
+            // Only bind when the launcher actually exposes the HTTP-over-IPC service
+            // so we never stall a page load on an unresolvable package.
+            val probe = Intent("org.openeel.action.httpoveripc.connect").setPackage(pkg)
+            if (act.packageManager.queryIntentServices(probe, 0).isEmpty()) {
+                Log.w(TAG, "RespectIpcCache: no http-over-ipc service for $pkg - using own cache only")
+                return null
+            }
+            HttpIpcClientBuilder(act)
+                .setIpcServicePackageName(pkg)
+                .build()
+                .also {
+                    ipcHttpClient = it
+                    ipcHttpClientPackage = pkg
+                    Log.d(TAG, "RespectIpcCache: bound HttpIpcClient to $pkg")
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "RespectIpcCache: could not create HttpIpcClient for $pkg: ${e.message}")
+            null
+        }
+    }
+
+    private fun closeIpcClient() {
+        ipcHttpClient?.let {
+            try {
+                it.close()
+            } catch (_: Exception) {
+            }
+        }
+        ipcHttpClient = null
+        ipcHttpClientPackage = null
+    }
+
     inner class CachingWebViewClient : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
@@ -274,6 +411,7 @@ class TangyCachePlugin : Plugin() {
             view?.evaluateJavascript(FORM_INTERCEPT_SCRIPT, null)
             view?.evaluateJavascript(PERMISSION_HELP_SCRIPT, null)
             view?.evaluateJavascript(XAPI_RELAY_SCRIPT, null)
+            view?.evaluateJavascript(XHR_QUEUE_SCRIPT, null)
         }
 
         override fun shouldInterceptRequest(
@@ -289,7 +427,11 @@ class TangyCachePlugin : Plugin() {
                     }
                 }.build()
 
-                val response = okHttpClient.newCall(okRequest).execute()
+                // RESPECT-launched lessons ask the launcher's IPC cache first
+                // (respectOkHttpClient); everything else uses the plain TangyCache
+                // network-first client.
+                val client = if (currentIpcPackage.isNullOrBlank()) okHttpClient else respectOkHttpClient
+                val response = client.newCall(okRequest).execute()
                 val contentType = response.header("Content-Type") ?: "application/octet-stream"
                 val mimeType = contentType.substringBefore(";")
                 val encoding = contentType.substringAfter("charset=", "").ifEmpty { null }
@@ -606,6 +748,7 @@ class TangyCachePlugin : Plugin() {
         currentWebView = null
         currentRespectLaunch = false
         currentIpcPackage = null
+        closeIpcClient()
         unregisterCachedWebViewBackHandler()
 
         // A RESPECT-launched lesson hands the user back to the launcher that
@@ -728,6 +871,7 @@ class TangyCachePlugin : Plugin() {
                     currentWebView = null
                     currentRespectLaunch = false
                     currentIpcPackage = null
+                    closeIpcClient()
                 }
 
                 val rootLayout = LinearLayout(activity).apply {
@@ -1124,9 +1268,17 @@ class TangyCachePlugin : Plugin() {
                         Log.w(TAG, "Sync failed for ${file.name}: ${e.message}")
                     }
                 }
+                // Also attempt delivery of queued xAPI statement batches.
+                var xapiSynced = 0
+                try {
+                    xapiSynced = replayQueuedXapi()
+                } catch (e: Exception) {
+                    Log.w(TAG, "syncPending xAPI replay error: ${e.message}")
+                }
                 call.resolve(JSObject().apply {
                     put("synced", synced)
                     put("failed", failed)
+                    put("xapiSynced", xapiSynced)
                 })
             } catch (e: Exception) {
                 call.reject("Sync failed: ${e.message}")
@@ -1171,14 +1323,79 @@ class TangyCachePlugin : Plugin() {
     }
 
     /**
+     * Persist a batch of xAPI statements that could not be delivered now, so they
+     * are replayed (to the same launcher IPC target) once connectivity returns.
+     */
+    private fun queueXapiPending(endpoint: String, auth: String, ipcPackage: String, statementsJson: String) {
+        try {
+            val dir = xapiPendingDir()
+            val id = UUID.randomUUID().toString()
+            val item = PendingXapi(id, endpoint, auth, ipcPackage, statementsJson, System.currentTimeMillis())
+            File(dir, "$id.json").writeText(gson.toJson(item), Charsets.UTF_8)
+            Log.i(TAG, "Queued $id xAPI statements for offline delivery (launcher $ipcPackage unreachable)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not queue xAPI statements for offline delivery", e)
+        }
+    }
+
+    /** Blocking (suspend) delivery of one xAPI batch to the launcher over IPC. */
+    private suspend fun deliverXapiNow(endpoint: String, auth: String, ipcPackage: String, statementsJson: String): Boolean {
+        val ctx = activity?.applicationContext ?: return false
+        return try {
+            val json = Json { ignoreUnknownKeys = true }
+            val statements = json.decodeFromString(
+                ListSerializer(XapiStatement.serializer()), statementsJson
+            )
+            val client = XapiIpcClientBuilder(ctx, endpoint)
+                .setAuth(auth)
+                .setJson(json)
+                .setIpcServicePackageName(ipcPackage)
+                .build()
+            try {
+                val result = client.statements.post(statements)
+                val ok = result is DataReadyState
+                Log.i(TAG, "Delivered ${statements.size} xAPI statements to $ipcPackage (ok=$ok): $result")
+                ok
+            } finally {
+                try { client.close() } catch (_: Throwable) { /* ignore */ }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "deliverXapiNow failed", e)
+            false
+        }
+    }
+
+    /** Replay every queued xAPI batch; returns how many were delivered. */
+    private suspend fun replayQueuedXapi(): Int {
+        val files = xapiPendingDir().listFiles()?.filter { it.name.endsWith(".json") } ?: emptyList()
+        var sent = 0
+        for (file in files) {
+            try {
+                val item = gson.fromJson(file.readText(Charsets.UTF_8), PendingXapi::class.java)
+                if (deliverXapiNow(item.endpoint, item.auth, item.ipcPackage, item.statementsJson)) {
+                    file.delete()
+                    sent++
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "xAPI replay failed for ${file.name}: ${e.message}")
+            }
+        }
+        return sent
+    }
+
+    /**
      * Shared relay used by both the Capacitor @PluginMethod and the WebView TangyCacheBridge.
      * Runs off the main thread; onResult is invoked on the plugin's IO scope.
+     * Offline persistence is handled by the online-survey-app's own outbox when present
+     * (it sets window.__tangerineOutboxActive), so by default we do NOT also queue here
+     * (avoids double delivery). queueOnFailure can re-enable it for hosts without the outbox.
      */
     private fun forwardStatementsViaIpc(
         endpoint: String,
         auth: String,
         ipcPackage: String,
         statementsJson: String,
+        queueOnFailure: Boolean = false,
         onResult: ((ok: Boolean, count: Int, result: String) -> Unit)? = null
     ) {
         val ctx = activity?.applicationContext
@@ -1188,31 +1405,11 @@ class TangyCachePlugin : Plugin() {
             return
         }
         scope.launch {
-            try {
-                val json = Json { ignoreUnknownKeys = true }
-                val statements = json.decodeFromString(
-                    ListSerializer(XapiStatement.serializer()), statementsJson
-                )
-                val client = XapiIpcClientBuilder(ctx, endpoint)
-                    .setAuth(auth)
-                    .setJson(json)
-                    .setIpcServicePackageName(ipcPackage)
-                    .build()
-                try {
-                    val result = client.statements.post(statements)
-                    val ok = result is DataReadyState
-                    Log.i(
-                        TAG,
-                        "Forwarded ${statements.size} xAPI statements to $ipcPackage (ok=$ok): $result"
-                    )
-                    onResult?.invoke(ok, statements.size, result.toString())
-                } finally {
-                    try { client.close() } catch (_: Throwable) { /* ignore */ }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "forwardXapiStatements failed", e)
-                onResult?.invoke(false, 0, e.message ?: "error")
+            val ok = deliverXapiNow(endpoint, auth, ipcPackage, statementsJson)
+            if (!ok && queueOnFailure) {
+                queueXapiPending(endpoint, auth, ipcPackage, statementsJson)
             }
+            onResult?.invoke(ok, 0, if (ok) "delivered" else "failed")
         }
     }
 
@@ -1306,6 +1503,12 @@ class TangyCachePlugin : Plugin() {
                                 Log.w(TAG, "Auto-sync failed for ${file.name}: ${e.message}")
                             }
                         }
+                        // Replay xAPI statements queued while the launcher IPC was down.
+                        try {
+                            replayQueuedXapi()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Auto xAPI replay error: ${e.message}")
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Auto-sync error", e)
                     }
@@ -1331,21 +1534,24 @@ class TangyCachePlugin : Plugin() {
     ) {
         @android.webkit.JavascriptInterface
         fun submitForm(url: String, method: String, body: String, headersJson: String) {
+            val headers = parseHeaderMap(headersJson)
+            val httpMethod = method.ifBlank { "POST" }
             scope.launch {
                 try {
-                    val request = Request.Builder().url(url)
-                        .method(method, body.toRequestBody(null))
-                        .build()
-                    val response = okHttpClient.newCall(request).execute()
-                    Log.i(TAG, "WebView form submitted: $method $url -> ${response.code}")
+                    val requestBuilder = Request.Builder().url(url)
+                        .method(httpMethod, body.toRequestBody(null))
+                    headers.forEach { (k, v) -> requestBuilder.addHeader(k, v) }
+                    val response = okHttpClient.newCall(requestBuilder.build()).execute()
+                    Log.i(TAG, "WebView form submitted: $httpMethod $url -> ${response.code}")
                     response.close()
                 } catch (e: Exception) {
-                    // Offline — queue for later
+                    // Offline — queue for later (preserve headers so replay carries
+                    // the upload token / content-type).
                     try {
                         val id = UUID.randomUUID().toString()
                         val submission = PendingSubmission(
-                            id = id, url = url, method = method,
-                            headers = emptyMap(), body = body,
+                            id = id, url = url, method = httpMethod,
+                            headers = headers, body = body,
                             createdAt = System.currentTimeMillis()
                         )
                         File(pendingDir, "$id.json").writeText(gson.toJson(submission))
@@ -1584,6 +1790,98 @@ class TangyCachePlugin : Plugin() {
                         };
                     }
                 } catch (e) {}
+            })();
+        """
+
+        /**
+         * JavaScript injected into every cached WebView page. The online-survey-app
+         * submits form responses with XHR/fetch (Angular HttpClient) - not an HTML
+         * <form> submit - so FORM_INTERCEPT_SCRIPT never sees them. This wrapper
+         * catches POST/PUT requests that fail at the network level (status 0 /
+         * onerror, i.e. offline) and re-issues them through TangyCacheBridge.submitForm,
+         * which queues them on disk and auto-syncs when connectivity returns.
+         * xAPI statements (sent to an LRS /statements endpoint, or relayed over IPC
+         * by XAPI_RELAY_SCRIPT) are left untouched.
+         */
+        private const val XHR_QUEUE_SCRIPT = """
+            (function() {
+                if (window.__tangyXhrQueueInjected) return;
+                window.__tangyXhrQueueInjected = true;
+                // When the loaded online-survey-app manages its own offline outbox
+                // (offline-outbox.service sets this flag), stand down so submissions
+                // are queued exactly once - by the app - and not also here natively.
+                try { if (window.__tangerineOutboxActive) return; } catch (e) {}
+                var hasBridge = false;
+                try { hasBridge = !!(window.TangyCacheBridge && TangyCacheBridge.submitForm); } catch (e) {}
+                if (!hasBridge) return;
+
+                function isXapi(url) {
+                    return /\/statements(\?|$)/.test(url) || /\/xapi\//.test(url) || /\/tincan\//.test(url);
+                }
+
+                function queueSubmission(method, url, body, contentType) {
+                    try {
+                        var headers = {};
+                        if (contentType) headers['Content-Type'] = contentType;
+                        console.log('[TangyCache] Queueing offline ' + method + ' ' + url);
+                        TangyCacheBridge.submitForm(url, method, (typeof body === 'string') ? body : '', JSON.stringify(headers));
+                    } catch (err) {
+                        console.warn('[TangyCache] Offline queue submit failed:', err);
+                    }
+                }
+
+                var origOpen = XMLHttpRequest.prototype.open;
+                var origSend = XMLHttpRequest.prototype.send;
+                var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                    this.__tangyMethod = (method || 'GET').toUpperCase();
+                    this.__tangyUrl = url;
+                    this.__tangyContentType = null;
+                    return origOpen.apply(this, arguments);
+                };
+                XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+                    if (String(name).toLowerCase() === 'content-type') {
+                        try { this.__tangyContentType = String(value); } catch (e) {}
+                    }
+                    return origSetHeader.apply(this, arguments);
+                };
+                XMLHttpRequest.prototype.send = function(body) {
+                    var self = this;
+                    var method = self.__tangyMethod || 'GET';
+                    var url = self.__tangyUrl || '';
+                    if (method !== 'GET' && method !== 'HEAD' && !isXapi(url)) {
+                        var queued = false;
+                        function maybeQueue() {
+                            // status 0 == network-level failure (offline / DNS / refused)
+                            if (queued || self.status !== 0) return;
+                            queued = true;
+                            queueSubmission(method, url, body, self.__tangyContentType);
+                        }
+                        try {
+                            self.addEventListener('error', maybeQueue);
+                            self.addEventListener('load', maybeQueue);
+                        } catch (e) {}
+                    }
+                    return origSend.apply(this, arguments);
+                };
+
+                // Wrap fetch() too (used by some form tooling instead of XHR).
+                if (window.fetch) {
+                    var origFetch = window.fetch.bind(window);
+                    window.fetch = function(input, init) {
+                        var url = (typeof input === 'string') ? input : ((input && input.url) || '');
+                        var method = (((init && init.method) || (input && input.method) || 'GET') + '').toUpperCase();
+                        var promise = origFetch(input, init);
+                        if (method === 'GET' || method === 'HEAD' || isXapi(url)) return promise;
+                        promise.catch(function() {
+                            var headers = (init && init.headers) || {};
+                            var contentType = headers['Content-Type'] || headers['content-type'] || null;
+                            var body = (init && init.body && typeof init.body === 'string') ? init.body : '';
+                            queueSubmission(method, url, body, contentType);
+                        });
+                        return promise;
+                    };
+                }
             })();
         """
     }
