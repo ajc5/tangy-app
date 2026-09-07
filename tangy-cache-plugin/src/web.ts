@@ -133,8 +133,20 @@ export class TangyCacheWeb implements TangyCachePlugin {
     url: string;
     showToolbar?: boolean;
     closeButtonText?: string;
+    launchedFromRespect?: boolean;
+    ipcPackage?: string;
   }): Promise<void> {
     // Web: open in new tab
     window.open(_options.url, '_blank');
+  }
+
+  async forwardXapiStatements(_options: {
+    endpoint: string;
+    auth: string;
+    ipcPackage: string;
+    statementsJson: string;
+  }): Promise<{ ok: boolean; count: number; result: string }> {
+    // Web: no RESPECT launcher IPC available. Nothing to relay.
+    return { ok: false, count: 0, result: 'xAPI IPC not supported on web' };
   }
 }

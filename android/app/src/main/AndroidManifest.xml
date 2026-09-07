@@ -1,6 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+        Package-visibility queries (Android 11+ / targetSdk >= 30).
+
+        When this app is launched by the RESPECT launcher and relays xAPI
+        statements back, TangyCache.forwardXapiStatements() binds to the
+        launcher's XapiIpcService using an implicit intent with action
+        "org.openeel.action.xapioveripc" targeting package world.respect.app.
+
+        Without declaring that service here, Android package-visibility
+        filtering makes the resolution fail with
+        "Unable to start service ... not found" and the statements never reach
+        the launcher's LRS.
+    -->
+    <queries>
+        <intent>
+            <action android:name="org.openeel.action.xapioveripc" />
+        </intent>
+        <intent>
+            <action android:name="org.openeel.action.httpoveripc.connect" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -39,28 +61,20 @@
             </intent-filter>
 
             <!--
-                Verified App Link so RESPECT's OPEN action (which uses
-                FLAG_ACTIVITY_REQUIRE_NON_BROWSER on Android 11+) resolves lesson
-                URLs to THIS app and launches it, instead of falling back to
-                RESPECT's own WebView. Without verification, Android 12+ excludes
-                this unverified filter from URL resolution entirely.
-
-                To make verification succeed you must also:
-                  1. Replace YOUR-TANGERINE-SERVER-HOST below with the https host
-                     of the Tangerine server that serves the lesson URLs.
-                  2. Serve this app's statement at
-                     https://<host>/.well-known/assetlinks.json using a cert
-                     fingerprint that matches the installed build
-                     (see docs/assetlinks.json).
-                  3. The host must be reachable over HTTPS — App Links never
-                     verify over plain http.
+                Open Educational Experience Launcher (RESPECT) launch support.
+                RESPECT fires an intent with the org.openeel.action.LAUNCH action
+                and the lesson URL as its data when it detects this app is
+                installed. Because the intent uses a custom action (not
+                ACTION_VIEW) it does NOT require a verified App Link, so it works
+                even when the Tangerine server is selected at runtime and its
+                domain is not declared in this manifest.
             -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
+            <intent-filter>
+                <action android:name="org.openeel.action.LAUNCH" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" />
-                <data android:host="YOUR-TANGERINE-SERVER-HOST" />
+                <data android:scheme="http" />
             </intent-filter>
 
         </activity>
@@ -80,4 +94,20 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Camera: photo & video field types -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Microphone: audio field types & video capture -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Location: geo / location field types -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Hardware features used by survey field types (optional, so the app stays
+         installable on devices without these sensors). -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 </manifest>

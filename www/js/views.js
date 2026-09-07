@@ -75,31 +75,6 @@ const views = {
     localStorage.setItem('cached-group-forms', JSON.stringify(map));
   },
 
-  // ── Cached-form "modified" tracking (from the OPDS publications feed) ──
-  // Used to decide whether a cached form is stale when the forms list loads.
-
-  _getFormModified(formUrl) {
-    try {
-      const map = JSON.parse(localStorage.getItem('cached-form-mods') || '{}');
-      return map[formUrl] || null;
-    } catch (e) { return null; }
-  },
-
-  _saveFormModified(formUrl, modified) {
-    if (!modified) return;
-    const map = JSON.parse(localStorage.getItem('cached-form-mods') || '{}');
-    map[formUrl] = modified;
-    localStorage.setItem('cached-form-mods', JSON.stringify(map));
-  },
-
-  _removeFormModified(formUrl) {
-    const map = JSON.parse(localStorage.getItem('cached-form-mods') || '{}');
-    if (formUrl in map) {
-      delete map[formUrl];
-      localStorage.setItem('cached-form-mods', JSON.stringify(map));
-    }
-  },
-
   // Remove URLs from the TangyCache disk cache (native). Web is a no-op.
   async _evictUrls(urls) {
     const unique = [...new Set((urls || []).filter(Boolean))];
@@ -173,22 +148,20 @@ const views = {
     const menuToggle = document.createElement('button');
     menuToggle.className = 'menu-btn menu-hamburger';
     menuToggle.textContent = '☰';
-    menuToggle.setAttribute('aria-label', t('menu.toggleLabel'));
+    menuToggle.setAttribute('aria-label', 'Menu');
     actions.appendChild(menuToggle);
 
     const dropdown = document.createElement('div');
     dropdown.className = 'menu-dropdown';
 
     if (loginMode) {
-      // Login screen: only "Clear Login History" is available.
-      const baseUrl = api.getBaseUrl();
+      // Login screen: only "Clear Saved Servers & Usernames" is available.
       dropdown.innerHTML = `
         <div class="dropdown-info">
-          <span class="dropdown-info-label">${t('menu.loginLabel')}</span>
-          <span class="dropdown-info-url">${baseUrl ? t('menu.serverPrefix') + baseUrl + (api.isDemoServer(baseUrl) ? t('common.demo') : '') : t('menu.noServerSelected')}</span>
+          <span class="dropdown-info-label">Login</span>
+          <span class="dropdown-info-url">${api.getBaseUrl() ? 'Server: ' + api.getBaseUrl() : 'No server selected'}</span>
         </div>
-        <button class="dropdown-item dropdown-item-clear">${t('menu.clearLoginHistory')}</button>
-        <button class="dropdown-item dropdown-item-lang">${t('menu.language')}</button>
+        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
       `;
       dropdown.querySelector('.dropdown-item-clear').addEventListener('click', () => {
         dropdown.classList.remove('open');
@@ -196,16 +169,14 @@ const views = {
       });
     } else {
       // Logged-in screen: RESPECT link, Clear saved data, Logout.
-      const baseUrl = api.getBaseUrl();
       dropdown.innerHTML = `
         <div class="dropdown-info">
-          <span class="dropdown-info-label">${api.getUsername() || t('menu.unknownUser')}</span>
-          <span class="dropdown-info-url">${baseUrl ? baseUrl + (api.isDemoServer(baseUrl) ? t('common.demo') : '') : t('menu.noServer')}</span>
+          <span class="dropdown-info-label">${api.getUsername() || 'Unknown'}</span>
+          <span class="dropdown-info-url">${api.getBaseUrl() || 'No server'}</span>
         </div>
-        <button class="dropdown-item dropdown-item-respect">${t('menu.copyRespect')}</button>
-        <button class="dropdown-item dropdown-item-clear">${t('menu.clearLoginHistory')}</button>
-        <button class="dropdown-item dropdown-item-lang">${t('menu.language')}</button>
-        <button class="dropdown-item dropdown-item-logout">${t('menu.logout')}</button>
+        <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
+        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
+        <button class="dropdown-item dropdown-item-logout">Logout</button>
       `;
       dropdown.querySelector('.dropdown-item-logout').addEventListener('click', () => {
         dropdown.classList.remove('open');
@@ -219,14 +190,14 @@ const views = {
         dropdown.classList.remove('open');
         const link = api.getRespectUrl();
         if (!link) {
-          alert(t('menu.noRespectUrl'));
+          alert('No RESPECT URL available. Please log in again.');
           return;
         }
         navigator.clipboard.writeText(link).then(() => {
           // Brief visual feedback
           const btn = dropdown.querySelector('.dropdown-item-respect');
           const origText = btn.textContent;
-          btn.textContent = t('menu.copied');
+          btn.textContent = '✓ Copied!';
           setTimeout(() => { btn.textContent = origText; }, 2000);
         }).catch(() => {
           // Fallback for older browsers
@@ -238,7 +209,7 @@ const views = {
           document.body.removeChild(textArea);
           const btn = dropdown.querySelector('.dropdown-item-respect');
           const origText = btn.textContent;
-          btn.textContent = t('menu.copied');
+          btn.textContent = '✓ Copied!';
           setTimeout(() => { btn.textContent = origText; }, 2000);
         });
       });
@@ -246,70 +217,16 @@ const views = {
 
     actions.appendChild(dropdown);
 
-    // ── Language sub-menu (drill-down, opened from the Language item) ──
-    const submenu = document.createElement('div');
-    submenu.className = 'menu-dropdown menu-dropdown-sub';
-    submenu.innerHTML = `
-      <button type="button" class="dropdown-item dropdown-item-back">← ${t('menu.back')}</button>
-      <button type="button" class="dropdown-item dropdown-item-direction">
-        <span>${t('menu.switchDirection')}</span>
-        <span class="dropdown-item-direction-value">${I18N.getDir() === 'rtl' ? t('menu.rtl') : t('menu.ltr')}</span>
-      </button>
-      <div class="dropdown-divider"></div>
-      ${I18N.getLanguages().map(l => `
-        <button type="button" class="dropdown-item dropdown-item-lang${l.code === I18N.getLocale() ? ' current' : ''}" data-lang="${l.code}">
-          ${l.code === I18N.getLocale() ? '✓ ' : ''}${l.name}
-        </button>
-      `).join('')}
-    `;
-    actions.appendChild(submenu);
-
-    const openSubmenu = () => {
-      dropdown.classList.remove('open');
-      submenu.classList.add('open');
-    };
-    const closeSubmenu = () => submenu.classList.remove('open');
-
-    // "Language" item in the main menu opens the sub-menu.
-    dropdown.querySelector('.dropdown-item-lang').addEventListener('click', (e) => {
-      e.stopPropagation();
-      openSubmenu();
-    });
-
-    submenu.querySelector('.dropdown-item-back').addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeSubmenu();
-      dropdown.classList.add('open');
-    });
-
-    submenu.querySelector('.dropdown-item-direction').addEventListener('click', () => {
-      const next = I18N.getDir() === 'rtl' ? 'ltr' : 'rtl';
-      I18N.setDirection(next);
-      this._rerenderForLocale();
-    });
-
-    submenu.querySelectorAll('.dropdown-item-lang[data-lang]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const code = btn.dataset.lang;
-        if (code && code !== I18N.getLocale()) {
-          I18N.setLocale(code);
-          this._rerenderForLocale();
-        }
-      });
-    });
-
     // Toggle dropdown
     menuToggle.addEventListener('click', (e) => {
       e.stopPropagation();
-      closeSubmenu();
       dropdown.classList.toggle('open');
     });
 
     // Close dropdown when clicking outside
     document.addEventListener('click', (e) => {
-      if (!dropdown.contains(e.target) && e.target !== menuToggle && !submenu.contains(e.target)) {
+      if (!dropdown.contains(e.target) && e.target !== menuToggle) {
         dropdown.classList.remove('open');
-        closeSubmenu();
       }
     });
 
@@ -327,23 +244,6 @@ const views = {
     this._currentGroupId = null;
     this._currentGroupName = null;
     this.renderGroups();
-  },
-
-  // Re-render the current screen after a language change so all labels update.
-  _rerenderForLocale() {
-    const token = localStorage.getItem('token');
-    const serverUrl = api.getBaseUrl();
-    if (token && serverUrl) {
-      if (this._currentGroupId && this._currentGroupName) {
-        this.renderForms(this._currentGroupId, this._currentGroupName);
-      } else {
-        this.renderGroups();
-      }
-    } else if (serverUrl) {
-      this.renderLoginStep2();
-    } else {
-      this.renderLoginStep1();
-    }
   },
 
   goBack() {
@@ -390,7 +290,7 @@ const views = {
    * to a clean login screen. Invoked from the burger menu on any screen.
    */
   clearLoginData() {
-    if (!confirm(t('confirm.clearLoginHistory'))) {
+    if (!confirm('Clear all saved servers and usernames?\n\nThis will remove stored login history and log you out.')) {
       return;
     }
     this._history = [];
@@ -421,7 +321,7 @@ const views = {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'suggest-item';
-      item.textContent = api.isDemoServer(server) ? `${server}${t('common.demo')}` : server;
+      item.textContent = server;
       item.title = server;
       item.addEventListener('click', () => {
         api.setBaseUrl(server);
@@ -459,12 +359,7 @@ const views = {
         input.value = username;
         list.classList.remove('open');
         const passwordInput = document.getElementById('password');
-        if (passwordInput) {
-          // Auto-fill the demo password for the demo user on the demo server.
-          const demoPassword = api.getDemoPassword(username);
-          if (demoPassword) passwordInput.value = demoPassword;
-          passwordInput.focus();
-        }
+        if (passwordInput) passwordInput.focus();
       });
       list.appendChild(item);
     });
@@ -484,12 +379,12 @@ const views = {
       <div class="screen" id="login-step1">
         <div class="card">
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
-          <h1>${t('login.serverTitle')}</h1>
+          <h1>Enter your server URL</h1>
           <div class="input-suggest">
-            <input type="text" id="server-url" placeholder="${t('login.serverPlaceholder')}" value="${api.getBaseUrl()}" autocomplete="off">
+            <input type="text" id="server-url" placeholder="https://your-server.com" value="${api.getBaseUrl()}" autocomplete="off">
             <div class="suggest-list" id="server-suggest-list"></div>
           </div>
-          <button id="connect-btn">${t('login.connect')}</button>
+          <button id="connect-btn">Connect</button>
           <div id="step1-error" class="error"></div>
         </div>
       </div>
@@ -500,7 +395,7 @@ const views = {
     document.getElementById('connect-btn').addEventListener('click', () => {
       const url = document.getElementById('server-url').value.trim();
       if (!url) {
-        document.getElementById('step1-error').textContent = t('errors.serverRequired');
+        document.getElementById('step1-error').textContent = 'Please enter a server URL.';
         return;
       }
       api.setBaseUrl(url);
@@ -518,17 +413,17 @@ const views = {
         <div class="card">
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
           <div class="server-info">
-            <label>${t('login.serverLabel')}</label>
-            <span id="server-display">${serverUrl}${api.isDemoServer(serverUrl) ? t('common.demo') : ''}</span>
-            <button id="change-server-btn" class="link-btn">${t('login.change')}</button>
+            <label>Server:</label>
+            <span id="server-display">${serverUrl}</span>
+            <button id="change-server-btn" class="link-btn">Change</button>
           </div>
           <form id="login-form">
           <div class="input-suggest">
-            <input type="text" id="username" placeholder="${t('login.usernamePlaceholder')}" autocomplete="off">
+            <input type="text" id="username" placeholder="Username" autocomplete="off">
             <div class="suggest-list" id="username-suggest-list"></div>
           </div>
-          <input type="password" id="password" placeholder="${t('login.passwordPlaceholder')}" autocomplete="current-password">
-            <button type="submit" id="login-btn">${t('login.login')}</button>
+          <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+            <button type="submit" id="login-btn">Login</button>
           </form>
           <div id="step2-error" class="error"></div>
       </div>
@@ -545,7 +440,7 @@ const views = {
       const username = document.getElementById('username').value.trim();
       const password = document.getElementById('password').value.trim();
       if (!username || !password) {
-        document.getElementById('step2-error').textContent = t('errors.fillAll');
+        document.getElementById('step2-error').textContent = 'Please fill in all fields.';
         return;
       }
       try {
@@ -553,13 +448,6 @@ const views = {
         this.renderGroups();
       } catch (err) {
         document.getElementById('step2-error').textContent = err.message;
-      }
-    });
-    // Auto-fill the demo password when the demo user is typed on the demo server.
-    document.getElementById('username').addEventListener('input', (e) => {
-      const demoPassword = api.getDemoPassword(e.target.value.trim());
-      if (demoPassword) {
-        document.getElementById('password').value = demoPassword;
       }
     });
     this._renderRecentUsernames();
@@ -571,8 +459,8 @@ const views = {
       history.pushState({ page: 'groups' }, '');
     }
     const container = document.getElementById('page-container');
-    container.innerHTML = `<div class="screen" id="groups"><h1>${t('pages.groups')}</h1><ul id="group-list"></ul></div>`;
-    this.renderHeader({ title: t('pages.groups'), showBack: true });
+    container.innerHTML = `<div class="screen" id="groups"><h1>Groups</h1><ul id="group-list"></ul></div>`;
+    this.renderHeader({ title: 'Groups', showBack: true });
     const list = document.getElementById('group-list');
     try {
       const groups = await api.getGroups();
@@ -605,7 +493,7 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
-        dlBtn.title = t('pages.pinGroup');
+        dlBtn.title = 'Pin all forms in this group for offline use';
         if (this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
@@ -627,7 +515,7 @@ const views = {
         list.appendChild(li);
       });
       if (groups.length === 0) {
-        container.innerHTML += `<div class="error">${t('errors.noGroups')}</div>`;
+        container.innerHTML += `<div class="error">No groups found</div>`;
       }
     } catch (err) {
       console.log('[VIEWS] renderGroups error:', err);
@@ -637,9 +525,8 @@ const views = {
 
   async renderForms(groupId, groupName) {
     const container = document.getElementById('page-container');
-    const formsTitle = t('pages.formsTitle', { groupName });
-    container.innerHTML = `<div class="screen" id="forms"><h1>${formsTitle}</h1><ul id="form-list"></ul></div>`;
-    this.renderHeader({ title: formsTitle, showBack: true });
+    container.innerHTML = `<div class="screen" id="forms"><h1>Forms - ${groupName}</h1><ul id="form-list"></ul></div>`;
+    this.renderHeader({ title: `Forms - ${groupName}`, showBack: true });
     const list = document.getElementById('form-list');
     try {
       console.log('[VIEWS] renderForms called with:', { groupId, groupName });
@@ -652,7 +539,7 @@ const views = {
         return nameA.localeCompare(nameB);
       });
       forms.forEach(form => {
-        const formName = form.title || form.name || form.id || t('pages.unnamedForm');
+        const formName = form.title || form.name || form.id || 'Unnamed Form';
         const formId = form.id;
         // Use OPDS open-access URL when available, otherwise construct from base
         const formUrl = form._openAccessUrl
@@ -671,7 +558,7 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
-        dlBtn.title = t('pages.pinForm');
+        dlBtn.title = 'Pin this form for offline use';
         if (this._isCached('form:' + formUrl) || this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
@@ -679,7 +566,7 @@ const views = {
         }
         dlBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.cacheFormResources(formUrl, dlBtn, form.modified);
+          this.cacheFormResources(formUrl, dlBtn);
         });
         li.appendChild(dlBtn);
 
@@ -687,26 +574,35 @@ const views = {
         list.appendChild(li);
       });
       if (forms.length === 0) {
-        container.innerHTML += `<div class="error">${t('errors.noForms')}</div>`;
+        container.innerHTML += `<div class="error">No forms found for this group</div>`;
       }
-
-      // Check the OPDS `modified` dates for cached forms and refresh any that
-      // changed on the server (fire-and-forget; skips cleanly when offline).
-      this._refreshCachedOnLoad(groupId, forms);
     } catch (err) {
       console.log('[VIEWS] renderForms error:', err);
       container.innerHTML += `<div class="error">${err.message}</div>`;
     }
   },
 
-  openFormInWebView(url) {
+  /**
+   * Open a form / lesson in a full-screen WebView.
+   *
+   * @param {string} url  The form URL (normal browsing) or a RESPECT deep-link
+   *                      lesson URL (launched by the RESPECT launcher).
+   * @param {Object} [options]
+   * @param {boolean} [options.launchedFromRespect] True when the lesson was opened via a
+   *   RESPECT deep link. Closing such a lesson returns the user to the RESPECT launcher;
+   *   other forms keep current behaviour (close returns to the Tangerine list it came from).
+   * @param {string}  [options.ipcPackage] The launcher's package name (`xapiIpcPackage`).
+   */
+  openFormInWebView(url, options = {}) {
     if (!url) {
-      alert(t('alerts.noUrl'));
+      alert('No URL available for this form.');
       return;
     }
     const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    const launchedFromRespect = !!options.launchedFromRespect;
+    const ipcPackage = options.ipcPackage || null;
 
-    console.log('[VIEWS] Opening form:', url);
+    console.log('[VIEWS] Opening form:', url, { launchedFromRespect, ipcPackage });
 
     try {
       // Prefer TangyCache.openCachedWebView (OkHttp + CacheInterceptor)
@@ -716,38 +612,42 @@ const views = {
         window.Capacitor.Plugins.TangyCache.openCachedWebView({
           url: url,
           showToolbar: true,
-          closeButtonText: t('common.close')
+          closeButtonText: 'Close',
+          launchedFromRespect: launchedFromRespect,
+          ipcPackage: ipcPackage
         }).catch(err => {
           console.error('[VIEWS] cached WebView failed:', err);
-          this._openInAppBrowserFallback(url, isNative);
+          this._openInAppBrowserFallback(url, isNative, { launchedFromRespect, ipcPackage });
         });
       } else if (isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.InAppBrowser) {
-        this._openInAppBrowserFallback(url, isNative);
+        this._openInAppBrowserFallback(url, isNative, { launchedFromRespect, ipcPackage });
       } else if (isNative) {
         console.error('[VIEWS] No cached WebView or InAppBrowser');
-        alert(t('alerts.noBrowserPlugin'));
+        alert('No browser plugin available.');
       } else {
         const win = window.open(url, '_blank');
-        if (!win) alert(t('alerts.popupBlocked') + url);
+        if (!win) alert('Popup blocked. Please allow popups for:\n\n' + url);
       }
     } catch (e) {
       console.error('[VIEWS] Error opening form:', e);
-      alert(t('alerts.couldNotOpen') + url);
+      alert('Could not open form:\n\n' + url);
     }
   },
 
-  _openInAppBrowserFallback(url, isNative) {
+  _openInAppBrowserFallback(url, isNative, options = {}) {
     if (!isNative || !window.Capacitor.Plugins.InAppBrowser) {
-      alert(t('alerts.cannotOpen'));
+      alert('Cannot open form: no browser available.');
       return;
     }
+    const launchedFromRespect = !!options.launchedFromRespect;
+    const ipcPackage = options.ipcPackage || null;
     console.log('[VIEWS] Opening form in InAppBrowser (fallback):', url);
     window.Capacitor.Plugins.InAppBrowser.openInWebView({
       url: url,
       options: {
         showToolbar: true,
         showURL: false,
-        closeButtonText: t('common.close'),
+        closeButtonText: 'Close',
         toolbarPosition: 0,
         showNavigationButtons: true,
         leftToRight: false,
@@ -760,10 +660,14 @@ const views = {
           pauseMedia: true,
           isIsolated: true
         }
-      }
+      },
+      // Best-effort: carried through so a native consumer could use it to hand
+      // a RESPECT-launched lesson back to the launcher on close.
+      launchedFromRespect: launchedFromRespect,
+      ipcPackage: ipcPackage
     }).catch(err => {
       console.error('[VIEWS] InAppBrowser failed:', err);
-      alert(t('alerts.failedToOpen') + (err.message || t('alerts.unknownError')));
+      alert('Failed to open form: ' + (err.message || 'Unknown error'));
     });
   },
 
@@ -771,7 +675,7 @@ const views = {
    * Toggle offline caching for a single form: pin it if not already cached,
    * or uncache (evict from disk) if it is.
    */
-  async cacheFormResources(formUrl, buttonEl, modified) {
+  async cacheFormResources(formUrl, buttonEl) {
     const cacheKey = 'form:' + formUrl;
 
     // Toggle — already cached: uncache it.
@@ -784,7 +688,6 @@ const views = {
         await this._evictUrls(this._getPinnedUrls(cacheKey));
         this._unmarkCached(cacheKey);
         this._removePinnedUrls(cacheKey);
-        this._removeFormModified(formUrl);
         this._setDownloadBtnUncached(buttonEl);
         console.log('[VIEWS] Uncached form:', formUrl);
       } catch (err) {
@@ -830,7 +733,6 @@ const views = {
 
       this._markCached(cacheKey);
       this._savePinnedUrls(cacheKey, result.urls);
-      this._saveFormModified(formUrl, modified);
       this._setDownloadBtnCached(buttonEl);
     } catch (err) {
       console.error('[VIEWS] Failed to pin form:', err);
@@ -871,7 +773,6 @@ const views = {
         this._getGroupFormKeys(groupId).forEach(k => {
           this._unmarkCached(k);
           this._removePinnedUrls(k);
-          this._removeFormModified(k.slice('form:'.length));
         });
         this._removePinnedUrls(cacheKey);
         this._removeGroupFormKeys(groupId);
@@ -925,7 +826,6 @@ const views = {
         }
 
         this._markCached('form:' + formUrl);
-        this._saveFormModified(formUrl, form.modified);
         childFormKeys.push('form:' + formUrl);
       }
 
@@ -951,116 +851,6 @@ const views = {
         buttonEl.style.opacity = '1';
       }, 2000);
     }
-  },
-
-  /**
-   * When the forms list loads, compare each cached form's OPDS `modified` date
-   * against what we last cached. Only forms whose server `modified` is newer
-   * are re-downloaded (network-first updates the disk cache), so unchanged
-   * forms are skipped. Fire-and-forget and offline-safe.
-   */
-  async _refreshCachedOnLoad(groupId, forms) {
-    if (!navigator.onLine) return; // skip when clearly offline
-    const groupKey = 'group:' + groupId;
-    const groupCached = this._isCached(groupKey);
-    const stale = [];
-
-    (forms || []).forEach(form => {
-      const formId = form.id;
-      const formUrl = form._openAccessUrl
-        ? (form._openAccessUrl.startsWith('http')
-            ? form._openAccessUrl
-            : `${api.getBaseUrl()}${form._openAccessUrl}`)
-        : `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
-      const key = 'form:' + formUrl;
-      // Only consider forms already cached (individually or via a cached group).
-      if (!this._isCached(key) && !groupCached) return;
-
-      const serverModifiedStr = form.modified;
-      const cachedModifiedStr = this._getFormModified(formUrl);
-      const serverModified = serverModifiedStr ? new Date(serverModifiedStr).getTime() : null;
-      const cachedModified = cachedModifiedStr ? new Date(cachedModifiedStr).getTime() : null;
-      // Refresh when we have no record (legacy cache) or the server is newer.
-      const needsRefresh = !cachedModified || (serverModified && serverModified > cachedModified);
-      if (needsRefresh) stale.push({ formUrl, key, modified: form.modified });
-    });
-
-    if (stale.length === 0) return;
-
-    const indicator = this._showRefreshIndicator(stale.length);
-    let refreshed = 0;
-    let failed = 0;
-    const CONCURRENCY = 2;
-    const queue = [...stale];
-
-    const worker = async () => {
-      while (queue.length) {
-        const { formUrl, key, modified } = queue.shift();
-        try {
-          const baseUrl = formUrl.replace(/#.*$/, '');
-          const urlsToCache = [baseUrl];
-          try {
-            const response = await httpClient.get(baseUrl, {
-              'Authorization': localStorage.getItem('token')
-            });
-            if (response.ok) {
-              const text = await response.text();
-              const ct = response.headers.get('content-type') || '';
-              if (ct.includes('/json') || ct.includes('opds') || text.trim().startsWith('{')) {
-                urlsToCache.push(...this._extractReadiumResources(text, baseUrl));
-              } else {
-                urlsToCache.push(...this._extractResourceUrls(text, baseUrl));
-              }
-            }
-          } catch (e) {
-            console.warn('[VIEWS] Refresh: could not fetch form page:', e);
-          }
-          const result = await cacheService.downloadAndRetain(
-            [...new Set(urlsToCache)].map(url => ({ url, remark: 'refresh-cache' }))
-          );
-          this._savePinnedUrls(key, result.urls);
-          this._saveFormModified(formUrl, modified);
-          if (groupCached) this._markCached(key); // group members count as cached
-          if (result.cached > 0) refreshed++; else failed++;
-        } catch (e) {
-          failed++;
-          console.warn('[VIEWS] Refresh failed for', formUrl, e);
-        }
-      }
-    };
-
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, stale.length) }, worker));
-
-    // A cached group's pinned set is the union of its forms' pinned URLs.
-    if (groupCached) {
-      const memberKeys = this._getGroupFormKeys(groupId);
-      this._savePinnedUrls(groupKey, memberKeys.reduce(
-        (acc, k) => acc.concat(this._getPinnedUrls(k)), []
-      ));
-    }
-
-    this._hideRefreshIndicator(indicator, refreshed, failed);
-  },
-
-  _showRefreshIndicator(count) {
-    const el = document.createElement('div');
-    el.className = 'refresh-indicator';
-    el.textContent = t(count === 1 ? 'refresh.updatingOne' : 'refresh.updatingMany', { count });
-    const container = document.getElementById('page-container');
-    if (container) container.prepend(el);
-    return el;
-  },
-
-  _hideRefreshIndicator(el, refreshed, failed) {
-    if (!el || !el.parentNode) return;
-    if (refreshed > 0) {
-      el.textContent = t('refresh.updated');
-      el.style.background = 'rgba(76, 175, 80, 0.14)';
-    } else {
-      el.textContent = t('refresh.failed');
-      el.style.background = 'rgba(0, 0, 0, 0.06)';
-    }
-    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 2500);
   },
 
   /**
@@ -1132,7 +922,7 @@ const views = {
         this.goBack();
       } else if (document.getElementById('group-list')) {
         // On groups page — confirm logout
-        if (confirm(t('confirm.logout'))) {
+        if (confirm('Log out and return to the login screen?')) {
           this.logout();
         } else {
           // Stay on page — push state back so next back still works

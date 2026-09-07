@@ -16,6 +16,28 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.TextView
+
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.Settings
+import android.webkit.GeolocationPermissions
+import android.webkit.ConsoleMessage
+import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -25,6 +47,11 @@ import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import world.respect.lib.dataloadstate.DataReadyState
+import world.respect.lib.xapi.model.XapiStatement
+import world.respect.xapi.ipc.client.XapiIpcClientBuilder
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -34,6 +61,9 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.File
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -69,6 +99,34 @@ class TangyCachePlugin : Plugin() {
     private val pinJobs = ConcurrentHashMap<String, PinJob>()
     private var proxyServer: CacheProxyServer? = null
     private var connectivityCallback: ConnectivityManager.NetworkCallback? = null
+
+    // ── WebView camera / mic / geolocation / file-capture support ─────────
+    private var permissionLauncher: ActivityResultLauncher<Array<String>>? = null
+    private var fileChooserLauncher: ActivityResultLauncher<Intent>? = null
+
+    // Continuation run once the OS runtime-permission dialog resolves.
+    private var pendingPermissionAction: ((Boolean) -> Unit)? = null
+
+    // Pending WebView getUserMedia (camera/mic) request awaiting the dialog.
+    private var pendingMediaRequest: PermissionRequest? = null
+
+    // Pending navigator.geolocation prompt awaiting the dialog.
+    private var pendingGeo: Pair<String, GeolocationPermissions.Callback>? = null
+
+    // In-flight <input type="file" capture> state.
+    private var pendingFileChooserCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingFileChooserParams: WebChromeClient.FileChooserParams? = null
+    private var pendingCaptureUri: Uri? = null
+
+    // ── Cached WebView overlay tracking (a single overlay at a time) ─────────
+    // Lets close / hardware-back know where to land: RESPECT-launched lessons
+    // hand the user back to the launcher; normally-opened forms just reveal the
+    // Tangerine page underneath (the form list they were opened from).
+    private var currentWebViewRoot: ViewGroup? = null
+    private var currentWebView: WebView? = null
+    private var currentRespectLaunch: Boolean = false
+    private var currentIpcPackage: String? = null
+    private var cachedWebViewBackCallback: OnBackPressedCallback? = null
 
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -210,8 +268,12 @@ class TangyCachePlugin : Plugin() {
     inner class CachingWebViewClient : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
-            // Inject form interceptor so submissions go through TangyCache's offline queue
+            // Inject the form interceptor (offline submissions) plus the
+            // permission-help banner (camera/mic/location denial messaging)
+            // and the xAPI relay (RESPECT launcher IPC handoff).
             view?.evaluateJavascript(FORM_INTERCEPT_SCRIPT, null)
+            view?.evaluateJavascript(PERMISSION_HELP_SCRIPT, null)
+            view?.evaluateJavascript(XAPI_RELAY_SCRIPT, null)
         }
 
         override fun shouldInterceptRequest(
@@ -249,6 +311,351 @@ class TangyCachePlugin : Plugin() {
                 return null
             }
         }
+    }
+
+    /**
+     * WebChromeClient for cached survey WebViews. Tangerine field types
+     * (photo / audio / video / location) use standard browser APIs -
+     * getUserMedia, navigator.geolocation and <input type=file capture> -
+     * which the stock WebChromeClient does not surface. This bridges them to
+     * Android runtime permission requests and the OS camera / gallery apps.
+     */
+    inner class CachedFormsWebChromeClient : WebChromeClient() {
+
+        /**
+         * Forward console messages from the lesson WebView (e.g. the form player's
+         * "[xAPI Debug]" logs and the injected XAPI_RELAY_SCRIPT logs) into logcat so the
+         * RESPECT xAPI relay path can be diagnosed.
+         */
+        override fun onConsoleMessage(message: ConsoleMessage?): Boolean {
+            if (message != null && !message.message().isNullOrBlank()) {
+                Log.i(TAG, "LessonJS[" + (message.messageLevel()?.name ?: "LOG") + "]: " + message.message())
+            }
+            return super.onConsoleMessage(message)
+        }
+
+        override fun onPermissionRequest(request: PermissionRequest) {
+            val wanted = request.resources.toSet()
+            val needsCamera = wanted.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+            val needsMic = wanted.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+
+            val perms = mutableListOf<String>()
+            if (needsCamera) perms.add(Manifest.permission.CAMERA)
+            if (needsMic) {
+                perms.add(Manifest.permission.RECORD_AUDIO)
+                perms.add(Manifest.permission.MODIFY_AUDIO_SETTINGS)
+            }
+
+            // Unrelated resource types (MIDI, protected media, ...) never need a prompt.
+            if (perms.isEmpty()) {
+                request.grant(request.resources)
+                return
+            }
+            if (hasPermissions(perms)) {
+                request.grant(request.resources)
+                return
+            }
+
+            pendingMediaRequest = request
+            pendingPermissionAction = { granted ->
+                val pending = pendingMediaRequest
+                pendingMediaRequest = null
+                if (pending != null) {
+                    if (granted) {
+                        pending.grant(pending.resources)
+                    } else {
+                        pending.deny()
+                        showPermissionMessage(
+                            "Camera or microphone permission was denied. To answer this " +
+                                "question, allow it in Settings."
+                        )
+                    }
+                }
+            }
+            requestRuntimePermissions(perms.toTypedArray())
+        }
+
+        override fun onGeolocationPermissionsShowPrompt(
+            origin: String,
+            callback: GeolocationPermissions.Callback
+        ) {
+            val perms = arrayOf(
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
+            if (hasPermissions(perms.toList())) {
+                callback.invoke(origin, true, false)
+                return
+            }
+
+            pendingGeo = origin to callback
+            pendingPermissionAction = { granted ->
+                val geo = pendingGeo
+                pendingGeo = null
+                if (geo != null) {
+                    when {
+                        granted -> geo.second.invoke(geo.first, true, false)
+                        // Android 12+ allows granting approximate (coarse) only.
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                            hasPermissions(listOf(Manifest.permission.ACCESS_COARSE_LOCATION)) ->
+                            geo.second.invoke(geo.first, true, false)
+                        else -> {
+                            geo.second.invoke(geo.first, false, false)
+                            showPermissionMessage(
+                                "Location permission was denied. To answer this " +
+                                    "question, allow it in Settings."
+                            )
+                        }
+                    }
+                }
+            }
+            requestRuntimePermissions(perms)
+        }
+
+        override fun onShowFileChooser(
+            webView: WebView,
+            filePathCallback: ValueCallback<Array<Uri>>,
+            fileChooserParams: FileChooserParams
+        ): Boolean {
+            pendingFileChooserCallback = filePathCallback
+            pendingFileChooserParams = fileChooserParams
+            openFileChooser(fileChooserParams)
+            return true
+        }
+    }
+
+    // ── Permission helpers (Android runtime permissions + messages) ───────
+
+    private fun hasPermissions(perms: Collection<String>): Boolean {
+        val ctx = activity ?: return false
+        return perms.all {
+            ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun permissionRationale(perms: Array<String>): String {
+        val hasCam = perms.contains(Manifest.permission.CAMERA)
+        val hasMic = perms.contains(Manifest.permission.RECORD_AUDIO)
+        val hasLoc = perms.contains(Manifest.permission.ACCESS_FINE_LOCATION) ||
+            perms.contains(Manifest.permission.ACCESS_COARSE_LOCATION)
+        return when {
+            hasCam && hasMic ->
+                "This question needs your camera and microphone. Tap Allow to record."
+            hasCam ->
+                "This question needs your camera. Tap Allow to take a photo or video."
+            hasMic ->
+                "This question needs your microphone. Tap Allow to record audio."
+            hasLoc ->
+                "This question needs your location. Tap Allow so it can be captured."
+            else -> "This question needs a device permission. Tap Allow to continue."
+        }
+    }
+
+    private fun requestRuntimePermissions(perms: Array<String>) {
+        val launcher = permissionLauncher
+        if (launcher == null || activity == null) {
+            val action = pendingPermissionAction
+            pendingPermissionAction = null
+            action?.invoke(false)
+            return
+        }
+        // Show a short explanation BEFORE the OS dialog so users understand why
+        // the survey is asking (Android's own dialog text cannot be customized).
+        showPermissionMessage(permissionRationale(perms))
+        launcher.launch(perms)
+    }
+
+    private fun showPermissionMessage(message: String) {
+        val act = activity ?: return
+        Toast.makeText(act, message, Toast.LENGTH_LONG).show()
+    }
+
+    // ── File chooser helpers (<input type=file capture>) ─────────────────
+
+    private fun openFileChooser(params: WebChromeClient.FileChooserParams) {
+        val acceptTypes = params.acceptTypes?.toList() ?: emptyList()
+        val capture = params.isCaptureEnabled
+        val capturePhoto = capture && acceptTypes.contains("image/*")
+        val captureVideo = capture && acceptTypes.contains("video/*")
+
+        when {
+            capturePhoto || captureVideo -> {
+                if (hasPermissions(listOf(Manifest.permission.CAMERA))) {
+                    if (!launchCapture(captureVideo)) launchDocumentPicker(params)
+                } else {
+                    pendingPermissionAction = { granted ->
+                        if (granted) {
+                            if (!launchCapture(captureVideo)) launchDocumentPicker(params)
+                        } else {
+                            completeFileChooser(null)
+                            showPermissionMessage(
+                                "Camera permission was denied. To attach a photo, allow it in Settings."
+                            )
+                        }
+                    }
+                    requestRuntimePermissions(arrayOf(Manifest.permission.CAMERA))
+                }
+            }
+            else -> launchDocumentPicker(params)
+        }
+    }
+
+    /** Launch the OS camera app. Returns false if no camera app is installed. */
+    @SuppressLint("QueryPermissionsNeeded")
+    private fun launchCapture(isVideo: Boolean): Boolean {
+        val act = activity ?: return false
+        val intent = if (isVideo) {
+            Intent(MediaStore.ACTION_VIDEO_CAPTURE)
+        } else {
+            Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+        }
+        if (intent.resolveActivity(act.packageManager) == null) return false
+
+        if (!isVideo) {
+            val uri = createImageCaptureUri(act) ?: return false
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, uri)
+            intent.addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            pendingCaptureUri = uri
+        }
+        fileChooserLauncher?.launch(intent)
+        return true
+    }
+
+    private fun launchDocumentPicker(params: WebChromeClient.FileChooserParams) {
+        val launcher = fileChooserLauncher
+        if (launcher == null) {
+            completeFileChooser(null)
+            return
+        }
+        val intent = params.createIntent()
+        if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        val acceptTypes = params.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
+        if (acceptTypes.isNotEmpty()) {
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
+        }
+        launcher.launch(intent)
+    }
+
+    @SuppressLint("QueryPermissionsNeeded")
+    private fun createImageCaptureUri(act: Activity): Uri? {
+        return try {
+            val dir = act.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: act.filesDir
+            if (!dir.exists()) dir.mkdirs()
+            val name = "IMG_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg"
+            FileProvider.getUriForFile(act, "${act.packageName}.fileprovider", File(dir, name))
+        } catch (e: Exception) {
+            Log.e(TAG, "createImageCaptureUri failed", e)
+            null
+        }
+    }
+
+    /** Called when the OS camera / gallery activity finishes. */
+    private fun resolveFileChooserResult(result: ActivityResult) {
+        val callback = pendingFileChooserCallback
+        pendingFileChooserCallback = null
+        pendingFileChooserParams = null
+        if (callback == null) return
+
+        val captureUri = pendingCaptureUri
+        pendingCaptureUri = null
+
+        when {
+            result.resultCode == Activity.RESULT_OK && captureUri != null ->
+                callback.onReceiveValue(arrayOf(captureUri))
+            result.resultCode == Activity.RESULT_OK ->
+                callback.onReceiveValue(
+                    WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+                )
+            else -> callback.onReceiveValue(null)
+        }
+    }
+
+    private fun completeFileChooser(uris: Array<Uri>?) {
+        pendingFileChooserCallback?.onReceiveValue(uris)
+        pendingFileChooserCallback = null
+        pendingFileChooserParams = null
+        pendingCaptureUri = null
+    }
+
+    /** Release any pending permission/file-chooser state, then remove the WebView. */
+    private fun closeCachedWebView(rootLayout: ViewGroup) {
+        completeFileChooser(null)
+        val media = pendingMediaRequest
+        val action = pendingPermissionAction
+        pendingMediaRequest = null
+        pendingPermissionAction = null
+        pendingGeo = null
+        if (media != null) {
+            try {
+                media.deny()
+            } catch (_: Exception) {
+                // WebView may already be gone - ignore
+            }
+        }
+        action?.invoke(false)
+        (rootLayout.parent as? ViewGroup)?.removeView(rootLayout)
+
+        // Capture + clear the per-overlay state before deciding where to land.
+        val wasRespectLaunch = currentRespectLaunch
+        val ipcPackage = currentIpcPackage
+        currentWebViewRoot = null
+        currentWebView = null
+        currentRespectLaunch = false
+        currentIpcPackage = null
+        unregisterCachedWebViewBackHandler()
+
+        // A RESPECT-launched lesson hands the user back to the launcher that
+        // opened it (same behaviour as form completion). Any other form just
+        // reveals the Tangerine page underneath — i.e. the form list it was
+        // opened from.
+        if (wasRespectLaunch) {
+            finishAndReturnToLauncher(ipcPackage)
+        }
+    }
+
+    /** Extract the RESPECT launcher package from a lesson URL, if present. */
+    private fun urlRespectIpcPackage(url: String): String? {
+        return try {
+            Uri.parse(url).getQueryParameter("xapiIpcPackage")
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Intercept the Android hardware/gesture back button while a cached WebView
+     * overlay is open. Without this, back is handled by Capacitor and only
+     * navigates the hidden shell underneath. While the overlay is open:
+     *  - a lesson with its own history steps back through it first;
+     *  - at the lesson root, back closes the overlay (returning to the RESPECT
+     *    launcher for RESPECT-launched lessons, or to the Tangerine list otherwise).
+     */
+    private fun registerCachedWebViewBackHandler() {
+        val act = activity ?: return
+        if (cachedWebViewBackCallback != null) return
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val webView = currentWebView
+                val root = currentWebViewRoot
+                if (webView == null || root == null) return
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                } else {
+                    closeCachedWebView(root)
+                }
+            }
+        }
+        act.onBackPressedDispatcher.addCallback(act, callback)
+        cachedWebViewBackCallback = callback
+    }
+
+    private fun unregisterCachedWebViewBackHandler() {
+        cachedWebViewBackCallback?.remove()
+        cachedWebViewBackCallback = null
     }
 
     @PluginMethod
@@ -304,10 +711,25 @@ class TangyCachePlugin : Plugin() {
         val url = call.getString("url") ?: return call.reject("url is required")
         val closeButtonText = call.getString("closeButtonText", "Close") ?: "Close"
         val showToolbar = call.getBoolean("showToolbar", true) ?: true
+        // RESPECT-launched lessons (opened via a deep link from the launcher):
+        // closing or backing out of them returns the user to the launcher.
+        val launchedFromRespect = call.getBoolean("launchedFromRespect", false) ?: false
+        val ipcPackageParam = call.getString("ipcPackage")
 
         val activity = activity ?: return call.reject("Activity not available")
         activity.runOnUiThread {
             try {
+                // If a cached WebView is somehow still open, remove it first — a fresh
+                // open supersedes any earlier one.
+                currentWebViewRoot?.let { prevRoot ->
+                    (prevRoot.parent as? ViewGroup)?.removeView(prevRoot)
+                    unregisterCachedWebViewBackHandler()
+                    currentWebViewRoot = null
+                    currentWebView = null
+                    currentRespectLaunch = false
+                    currentIpcPackage = null
+                }
+
                 val rootLayout = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
                     layoutParams = ViewGroup.LayoutParams(
@@ -333,7 +755,7 @@ class TangyCachePlugin : Plugin() {
                         textSize = 20f
                         setPadding(12, 8, 12, 8)
                         setOnClickListener {
-                            (rootLayout.parent as? ViewGroup)?.removeView(rootLayout)
+                            closeCachedWebView(rootLayout)
                         }
                     }
                     toolbar.addView(backBtn)
@@ -351,7 +773,7 @@ class TangyCachePlugin : Plugin() {
                         textSize = 18f
                         setPadding(12, 8, 12, 8)
                         setOnClickListener {
-                            (rootLayout.parent as? ViewGroup)?.removeView(rootLayout)
+                            closeCachedWebView(rootLayout)
                         }
                     }
                     toolbar.addView(closeBtn)
@@ -365,12 +787,16 @@ class TangyCachePlugin : Plugin() {
                     )
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
+                    settings.setGeolocationEnabled(true) // required for location field types
                     settings.allowFileAccess = false
                     settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         settings.safeBrowsingEnabled = false
                     }
                     webViewClient = CachingWebViewClient()
+                    // Camera/mic/geolocation requests and <input type=file capture>
+                    // would be silently denied without a WebChromeClient.
+                    webChromeClient = CachedFormsWebChromeClient()
                     addJavascriptInterface(
                         TangyCacheFormBridge(okHttpClient, pendingDir(), gson),
                         "TangyCacheBridge"
@@ -384,6 +810,18 @@ class TangyCachePlugin : Plugin() {
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                 )
+
+                // Track the overlay so closing / backing out of it knows where to
+                // land: RESPECT-launched lessons return to the launcher that opened
+                // them; any other form just reveals the Tangerine page underneath.
+                val respectIpc = ipcPackageParam?.takeIf { it.isNotBlank() }
+                    ?: urlRespectIpcPackage(url)
+                currentWebViewRoot = rootLayout
+                currentWebView = webView
+                currentRespectLaunch = launchedFromRespect || respectIpc != null
+                currentIpcPackage = respectIpc
+                registerCachedWebViewBackHandler()
+
                 webView.loadUrl(url)
                 call.resolve()
             } catch (e: Exception) {
@@ -702,9 +1140,134 @@ class TangyCachePlugin : Plugin() {
         call.resolve()
     }
 
+    /**
+     * Forward xAPI statements (generated client-side in the lesson WebView by the form player)
+     * back to the RESPECT / Open Educational Experience Launcher that launched this lesson,
+     * using the launcher's xAPI-over-IPC service. This app does NOT originate statements — it
+     * only relays the ones it is given, so the launcher can forward them to the real LRS.
+     */
+    @PluginMethod
+    fun forwardXapiStatements(call: PluginCall) {
+        val endpoint = call.getString("endpoint")
+            ?: return call.reject("endpoint is required")
+        val auth = call.getString("auth")
+            ?: return call.reject("auth is required")
+        val ipcPackage = call.getString("ipcPackage")
+            ?: return call.reject("ipcPackage is required")
+        val statementsJson = call.getString("statementsJson")
+            ?: return call.reject("statementsJson is required")
+
+        forwardStatementsViaIpc(endpoint, auth, ipcPackage, statementsJson) { ok, count, result ->
+            if (ok) {
+                call.resolve(JSObject().apply {
+                    put("ok", true)
+                    put("count", count)
+                    put("result", result)
+                })
+            } else {
+                call.reject("forwardXapiStatements failed: $result")
+            }
+        }
+    }
+
+    /**
+     * Shared relay used by both the Capacitor @PluginMethod and the WebView TangyCacheBridge.
+     * Runs off the main thread; onResult is invoked on the plugin's IO scope.
+     */
+    private fun forwardStatementsViaIpc(
+        endpoint: String,
+        auth: String,
+        ipcPackage: String,
+        statementsJson: String,
+        onResult: ((ok: Boolean, count: Int, result: String) -> Unit)? = null
+    ) {
+        val ctx = activity?.applicationContext
+        if (ctx == null) {
+            Log.e(TAG, "forwardXapiStatements failed: activity not available")
+            onResult?.invoke(false, 0, "Activity not available")
+            return
+        }
+        scope.launch {
+            try {
+                val json = Json { ignoreUnknownKeys = true }
+                val statements = json.decodeFromString(
+                    ListSerializer(XapiStatement.serializer()), statementsJson
+                )
+                val client = XapiIpcClientBuilder(ctx, endpoint)
+                    .setAuth(auth)
+                    .setJson(json)
+                    .setIpcServicePackageName(ipcPackage)
+                    .build()
+                try {
+                    val result = client.statements.post(statements)
+                    val ok = result is DataReadyState
+                    Log.i(
+                        TAG,
+                        "Forwarded ${statements.size} xAPI statements to $ipcPackage (ok=$ok): $result"
+                    )
+                    onResult?.invoke(ok, statements.size, result.toString())
+                } finally {
+                    try { client.close() } catch (_: Throwable) { /* ignore */ }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "forwardXapiStatements failed", e)
+                onResult?.invoke(false, 0, e.message ?: "error")
+            }
+        }
+    }
+
+    /**
+     * Close the RESPECT-launched lesson and return the user to the launcher app that opened it.
+     * Called once the form has been submitted (the xAPI relay only fires for RESPECT-launched
+     * lessons, at completion). Brings the launcher's task back to the foreground (best-effort)
+     * and finishes this activity, per the RESPECT "finish when the learning unit is complete"
+     * contract.
+     */
+    private fun finishAndReturnToLauncher(ipcPackage: String?) {
+        val ctx = activity ?: return
+        ctx.runOnUiThread {
+            try {
+                if (!ipcPackage.isNullOrBlank()) {
+                    val launch = Intent(Intent.ACTION_MAIN)
+                        .addCategory(Intent.CATEGORY_LAUNCHER)
+                        .setPackage(ipcPackage)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    ctx.startActivity(launch)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "finishAndReturnToLauncher: could not bring launcher forward", e)
+            } finally {
+                ctx.finish()
+            }
+        }
+    }
+
     override fun load() {
         super.load()
+        registerActivityLaunchers()
         registerConnectivitySync()
+    }
+
+    /**
+     * Activity Result launchers must be registered before the Activity reaches
+     * STARTED. Plugin load() runs during onCreate, so we register here once and
+     * reuse the launchers for every cached WebView opened afterwards.
+     */
+    private fun registerActivityLaunchers() {
+        val br = bridge ?: return
+        permissionLauncher = br.registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { result ->
+            val granted = result.values.all { it }
+            val action = pendingPermissionAction
+            pendingPermissionAction = null
+            action?.invoke(granted)
+        }
+        fileChooserLauncher = br.registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            resolveFileChooserResult(result)
+        }
     }
 
     override fun handleOnDestroy() {
@@ -798,6 +1361,47 @@ class TangyCachePlugin : Plugin() {
         fun getPendingCount(): Int {
             return pendingDir.listFiles()?.count { it.name.endsWith(".json") } ?: 0
         }
+
+        /**
+         * Open this app's Android Settings page so the user can re-enable a
+         * permission they previously denied. Called by the injected
+         * permission-help banner's "Open Settings" button.
+         */
+        @android.webkit.JavascriptInterface
+        fun openAppSettings() {
+            val act = this@TangyCachePlugin.activity ?: return
+            try {
+                act.startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:${act.packageName}")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "openAppSettings failed", e)
+            }
+        }
+
+        /**
+         * Forward xAPI statements from the lesson WebView (where Capacitor is NOT injected) back
+         * to the RESPECT launcher that opened the lesson, via the launcher's xAPI-over-IPC
+         * service. Fire-and-forget: results are logged on the native side.
+         */
+        @android.webkit.JavascriptInterface
+        fun forwardXapiStatements(endpoint: String, auth: String, ipcPackage: String, statementsJson: String) {
+            Log.i(TAG, "TangyCacheBridge.forwardXapiStatements called for $ipcPackage")
+            this@TangyCachePlugin.forwardStatementsViaIpc(
+                endpoint, auth, ipcPackage, statementsJson
+            ) { ok, count, result ->
+                Log.i(
+                    TAG,
+                    "TangyCacheBridge forwarded $count xAPI statements to $ipcPackage (ok=$ok): $result"
+                )
+                // The form was submitted in a RESPECT-launched lesson: close the lesson WebView
+                // and hand the user back to the RESPECT launcher that opened it.
+                this@TangyCachePlugin.finishAndReturnToLauncher(ipcPackage)
+            }
+        }
     }
 
     companion object {
@@ -833,6 +1437,153 @@ class TangyCachePlugin : Plugin() {
                         form.submit();
                     }
                 });
+            })();
+        """
+
+        /**
+         * JavaScript injected into every cached WebView page. When a RESPECT launcher opened this
+         * lesson (xapiIpcPackage is present in the URL), it wraps ADL.XAPIWrapper so the xAPI
+         * statements the form player sends (ADL.XAPIWrapper.sendStatements) are relayed back to
+         * the RESPECT launcher over its xAPI-over-IPC service instead of being POSTed to a local
+         * endpoint that is unreachable from Tangerine's WebView. No form-player/server change is
+         * required — this runs entirely inside the app's WebView. Non-launched lessons are left
+         * untouched (the launcher's xapiIpcPackage is absent).
+         */
+        private const val XAPI_RELAY_SCRIPT = """
+            (function() {
+                if (window.__tangyXapiRelayInjected) return;
+                window.__tangyXapiRelayInjected = true;
+
+                var params = new URLSearchParams(window.location.search || '');
+                var ipcPackage = params.get('xapiIpcPackage') || '';
+                var hasBridge = false;
+                try { hasBridge = !!(window.TangyCacheBridge && TangyCacheBridge.forwardXapiStatements); } catch (e) {}
+                if (!ipcPackage || !hasBridge) return;
+
+                function install() {
+                    if (!window.ADL || !window.ADL.XAPIWrapper) return false;
+                    var wrapper = window.ADL.XAPIWrapper;
+                    if (wrapper.__tangyRelayInstalled) return true;
+                    wrapper.__tangyRelayInstalled = true;
+                    console.log('[TangyCache] XAPI relay installed for launcher ' + ipcPackage);
+
+                    var endpoint = '';
+                    var auth = '';
+
+                    var origChangeConfig = wrapper.changeConfig;
+                    wrapper.changeConfig = function(cfg) {
+                        if (cfg) {
+                            if (cfg.endpoint) endpoint = cfg.endpoint;
+                            if (cfg.auth) auth = cfg.auth;
+                        }
+                        if (origChangeConfig) return origChangeConfig.apply(this, arguments);
+                    };
+
+                    var origSend = wrapper.sendStatements;
+                    wrapper.sendStatements = function(statements) {
+                        if (endpoint && auth) {
+                            try {
+                                console.log('[TangyCache] Relaying xAPI statements to launcher ' + ipcPackage);
+                                TangyCacheBridge.forwardXapiStatements(
+                                    endpoint, auth, ipcPackage, JSON.stringify(statements || [])
+                                );
+                                return null;
+                            } catch (e) {
+                                console.error('[TangyCache] xAPI IPC relay failed; falling back to direct send', e);
+                            }
+                        }
+                        if (origSend) return origSend.apply(this, arguments);
+                    };
+                    return true;
+                }
+
+                // ADL.XAPIWrapper may not exist yet on first paint; the form is submitted later,
+                // so poll briefly until it is available and patched.
+                var attempts = 0;
+                (function tryInstall() {
+                    if (install()) return;
+                    if (++attempts > 200) return; // ~20s cap
+                    setTimeout(tryInstall, 100);
+                })();
+            })();
+        """
+
+        /**
+         * JavaScript injected into every cached WebView page. When a survey field
+         * type (photo / audio / video / location) is denied camera/mic/location
+         * access, it shows a short dismissible banner inside the form explaining
+         * what is needed, plus an "Open Settings" button when the native bridge
+         * is available.
+         */
+        private const val PERMISSION_HELP_SCRIPT = """
+            (function() {
+                if (window.__tangyPermissionHelpInjected) return;
+                window.__tangyPermissionHelpInjected = true;
+
+                var banners = {
+                    media: 'This form needs camera and/or microphone access to answer this question. If Android asks, tap Allow.',
+                    camera: 'This form needs camera access to take a photo or video. If Android asks, tap Allow.',
+                    mic: 'This form needs microphone access to record audio. If Android asks, tap Allow.',
+                    geo: 'This form needs your location to answer this question. If Android asks, tap Allow.'
+                };
+
+                function showBanner(text) {
+                    try {
+                        var old = document.getElementById('tangy-perm-banner');
+                        if (old) old.remove();
+                        var bar = document.createElement('div');
+                        bar.id = 'tangy-perm-banner';
+                        bar.textContent = text;
+                        bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;padding:12px 16px;' +
+                            'background:#212a3f;color:#ffffff;font:600 14px/1.4 Roboto,sans-serif;' +
+                            'text-align:center;z-index:2147483647;box-shadow:0 -2px 8px rgba(0,0,0,0.35);';
+                        var hasBridge = false;
+                        try { hasBridge = !!(window.TangyCacheBridge && TangyCacheBridge.openAppSettings); } catch (e) {}
+                        if (hasBridge) {
+                            var btn = document.createElement('button');
+                            btn.textContent = 'Open Settings';
+                            btn.style.cssText = 'display:block;margin:8px auto 0;background:#ffffff;' +
+                                'color:#212a3f;border:0;border-radius:4px;padding:6px 14px;' +
+                                'font:600 14px Roboto,sans-serif;';
+                            btn.onclick = function() { try { TangyCacheBridge.openAppSettings(); } catch (e) {} };
+                            bar.appendChild(btn);
+                        }
+                        bar.addEventListener('click', function() { bar.remove(); });
+                        document.body.appendChild(bar);
+                        setTimeout(function() { bar.remove(); }, 12000);
+                    } catch (e) {}
+                }
+
+                // camera / microphone (photo, audio, video field types)
+                try {
+                    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                        var origGum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+                        navigator.mediaDevices.getUserMedia = function(constraints) {
+                            return origGum(constraints).catch(function(err) {
+                                if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError')) {
+                                    var c = constraints || {};
+                                    var wantsCam = !!(c.video);
+                                    var wantsMic = !!(c.audio);
+                                    showBanner(wantsCam && wantsMic ? banners.media : wantsCam ? banners.camera : banners.mic);
+                                }
+                                throw err;
+                            });
+                        };
+                    }
+                } catch (e) {}
+
+                // geolocation (location field types)
+                try {
+                    if (navigator.geolocation && navigator.geolocation.getCurrentPosition) {
+                        var origPos = navigator.geolocation.getCurrentPosition.bind(navigator.geolocation);
+                        navigator.geolocation.getCurrentPosition = function(success, error, options) {
+                            return origPos(success, function(err) {
+                                if (err && (err.code === 1 || err.code === 2)) showBanner(banners.geo);
+                                if (typeof error === 'function') error(err);
+                            }, options);
+                        };
+                    }
+                } catch (e) {}
             })();
         """
     }

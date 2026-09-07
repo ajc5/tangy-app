@@ -40,7 +40,7 @@ const MAX_RECENT_LOGINS = 10;
 
 // Always-available demo login, shown in the server/user dropdowns even after
 // the recent servers/usernames history is cleared.
-const DEMO_SERVER = 'http://tangy.is-local.host';
+const DEMO_SERVER = 'https://tangy.is-local.host';
 const DEMO_USERNAME = 'appuser';
 const DEMO_PASSWORD = 'Password1!';
 

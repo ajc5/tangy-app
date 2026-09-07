@@ -49,7 +49,19 @@ dependencies {
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
     implementation project(':tangy-cache-plugin')
-    implementation 'world.respect:respect-lib-cache-android:0.1.0-SNAPSHOT'
+    // Old RESPECT cache library (UstadCache). Its shared helper modules (ihttp-core,
+    // ihttp-iostreams, serializers, util) are provided instead by org.openeel.app:1.0.41 via the
+    // TangyCache plugin's xAPI/IPC dependencies; excluding the old duplicates prevents
+    // checkDebugDuplicateClasses failures.
+    implementation('world.respect:respect-lib-cache-android:0.1.0-SNAPSHOT') {
+        exclude group: 'world.respect', module: 'respect-lib-ihttp-core-android'
+        exclude group: 'world.respect', module: 'respect-lib-ihttp-iostreams-android'
+        exclude group: 'world.respect', module: 'respect-lib-serializers-android'
+        exclude group: 'world.respect', module: 'respect-lib-util-android'
+    }
+    // kotlinx-io was previously exposed transitively by the excluded world.respect modules;
+    // MainActivity's CachePaths code uses kotlinx.io.files.Path, so bring it in explicitly.
+    implementation 'org.jetbrains.kotlinx:kotlinx-io-core:0.8.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0'
     implementation 'com.squareup.okhttp3:okhttp:5.1.0'
     implementation 'androidx.room:room-runtime:2.8.2'

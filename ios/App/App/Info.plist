@@ -47,5 +47,11 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Camera is used to capture photos and video answers in survey forms.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The microphone is used to record audio and video answers in survey forms.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Your location is used when a survey form includes a location field.</string>
 </dict>
 </plist>

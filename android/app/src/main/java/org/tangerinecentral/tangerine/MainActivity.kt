@@ -1,5 +1,6 @@
 package org.tangerinecentral.tangerine
 
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.room.Room
@@ -15,6 +16,7 @@ import com.ustadmobile.libcache.okhttp.UstadCacheInterceptor
 import kotlinx.io.files.Path
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
+import org.json.JSONObject
 import java.io.File
 
 class MainActivity : BridgeActivity() {
@@ -90,6 +92,39 @@ class MainActivity : BridgeActivity() {
         Log.i(TAG, "RESPECT proxy started — all WebView HTTP goes through UstadCache")
     }
 
+    /**
+     * Handle the Open Educational Experience Launcher (RESPECT)
+     * org.openeel.action.LAUNCH intent. RESPECT fires this action with the lesson
+     * URL as the intent data when it detects this app is installed and the lesson
+     * host is not a verified App Link (e.g. the user can connect to any Tangerine
+     * server).
+     *
+     * Cold starts are already handled by Capacitor's App.getLaunchUrl() (the
+     * bridge captures the intent data regardless of action), so this only needs to
+     * forward the URL on warm starts, where Capacitor's appUrlOpen event is
+     * limited to ACTION_VIEW intents.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == OPEN_EEL_LAUNCH_ACTION) {
+            val url = intent.data?.toString()
+            if (url != null) {
+                Log.i(TAG, "OpenEel LAUNCH intent received: $url")
+                forwardDeepLinkToJs(url)
+            }
+        }
+    }
+
+    private fun forwardDeepLinkToJs(url: String) {
+        val webView = bridge?.webView ?: return
+        webView.post {
+            // JSONObject.quote produces a properly escaped JS string literal.
+            val js = "window.handleDeepLink ? handleDeepLink(${JSONObject.quote(url)}) : null;"
+            Log.i(TAG, "Forwarding deep link to JS: $js")
+            webView.evaluateJavascript(js, null)
+        }
+    }
+
     override fun onDestroy() {
         proxy?.stop()
         super.onDestroy()
@@ -97,5 +132,6 @@ class MainActivity : BridgeActivity() {
 
     companion object {
         const val TAG = "MainActivity"
+        const val OPEN_EEL_LAUNCH_ACTION = "org.openeel.action.LAUNCH"
     }
 }

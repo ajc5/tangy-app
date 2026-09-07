@@ -9,7 +9,7 @@ buildscript {
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.0'
         classpath 'com.google.gms:google-services:4.4.4'
-        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10'
 
         // NOTE: Do not place your application dependencies here; they belong
         // in the individual module build.gradle files
@@ -23,6 +23,18 @@ allprojects {
         google()
         mavenCentral()
         mavenLocal()
+    }
+}
+
+// The RESPECT/OpenEEL IPC artifacts were built against androidx.core 1.19.0, which declares an
+// Android Gradle plugin 9.1+ requirement. This project uses AGP 8.13.0, so pin androidx.core
+// to the project version (1.17.0) to keep the build on the current AGP.
+subprojects {
+    configurations.configureEach {
+        resolutionStrategy {
+            force 'androidx.core:core:1.17.0'
+            force 'androidx.core:core-ktx:1.17.0'
+        }
     }
 }
 

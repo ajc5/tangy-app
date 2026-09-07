@@ -1,51 +1,36 @@
-# Launching Tangerine from RESPECT (Android App Link verification)
+# Launching Tangerine lessons from RESPECT (Open Educational Experience Launcher)
 
-When RESPECT taps **OPEN** on a lesson it fires an implicit `ACTION_VIEW` intent on the lesson
-URL with `FLAG_ACTIVITY_REQUIRE_NON_BROWSER`. On Android 11+ (SDK 30+) that flag only resolves to
-an app whose intent filter is a **verified Android App Link**. This app is now set up to be that
-verified handler (see `android/app/src/main/AndroidManifest.xml`), but **verification has to be
-completed on the server side before it takes effect**.
+RESPECT lets a user launch a lesson from a compatible app (like Tangerine) directly in that app's
+own UI. Because the Tangerine app can connect to any Tangerine server (the server is chosen at
+runtime, so lesson URLs are **not** verified App Links), RESPECT launches it with a custom intent
+action rather than relying on Android App Links.
 
-## What is needed
+## How it works
 
-### 1. Tangerine server (mandatory, per lesson-host)
+RESPECT (`LaunchAppUseCaseAndroid`) fires an implicit intent with the lesson URL as its data:
 
-The https host of the Tangerine server that serves the lesson URLs must publish this app's
-statement at:
-
-```
-https://<host>/.well-known/assetlinks.json
-```
-
-Copy `docs/assetlinks.json` there. It currently contains the **debug** signing certificate
-fingerprint (`1A:31:9B:63:...`) so debug builds on the emulator verify. For a release build, add
-(or replace with) the release keystore's SHA-256 fingerprint.
-
-To get the release fingerprint:
-
-```bash
-keytool -list -v -keystore <release.jks> -alias <alias> -storepass <pass> | grep -A1 "SHA256:"
+```kotlin
+val intent = Intent("org.openeel.action.LAUNCH").also {
+    it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+    it.data = <lesson URL with xAPI launch params>.toUri()
+    it.addCategory(Intent.CATEGORY_BROWSABLE)
+}
 ```
 
-Add it as another entry in the `sha256_cert_fingerprints` array.
+Because the action is a custom action (not `ACTION_VIEW`), it does **not** require a verified App
+Link — so it works for any lesson host, including dynamically selected Tangerine servers.
 
-**HTTPS is required.** Android fetches `assetlinks.json` only over HTTPS and never verifies App
-Links over plain `http`. So `http://192.168.1.90:8080` will never verify — the lesson URL host
-must be reachable over HTTPS.
+Tangerine handles it in three places:
 
-### 2. Android manifest (done, one value to fill)
+1. `android/app/src/main/AndroidManifest.xml` — the `org.openeel.action.LAUNCH` intent filter on
+   `MainActivity` (schemes `https`/`http`), which lets RESPECT detect and launch the app.
+2. `MainActivity.kt` (`onNewIntent`) — forwards the incoming lesson URL into the web layer on
+   **warm** starts. Cold starts are already covered by Capacitor's `App.getLaunchUrl()` (the Bridge
+   captures the intent data regardless of action).
+3. `www/js/app.js` (`handleDeepLink`) — restores the session and opens the lesson in **Tangerine's
+   own in-app browser** (`views.openFormInWebView` → the TangyCache cached WebView).
 
-`android/app/src/main/AndroidManifest.xml` now declares a verified App Link intent filter. Replace
-the placeholder:
-
-```xml
-<data android:host="YOUR-TANGERINE-SERVER-HOST" />
-```
-
-with the actual https host from step 1 (e.g. `<data android:host="tangy.example.org" />`). Add more
-`<data android:host="..."/>` lines if multiple servers should be able to launch this app.
-
-### 3. Rebuild and verify
+## Rebuild and verify
 
 ```bash
 npx cap sync android
@@ -53,25 +38,26 @@ cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Then confirm Android has verified the link:
+Confirm the LAUNCH intent resolves to Tangerine (not a browser):
 
 ```bash
-adb shell dumpsys package org.tangerinecentral.tangerine | grep -A2 "androidx.autofill\|links"
-# Look for:  verified=true for the host
+adb shell cmd package query-activities --brief \
+  -a org.openeel.action.LAUNCH -c android.intent.category.BROWSABLE \
+  -d "https://<any-host>/releases/prod/online-survey-apps/<groupId>/<formId>/"
 ```
 
-A quicker sanity check that the URL now resolves to Tangerine (instead of the browser):
+You should see `org.tangerinecentral.tangerine/.MainActivity`.
+
+Watch the log when RESPECT opens a lesson:
 
 ```bash
-adb shell cmd package resolve-activity --brief -a android.intent.action.VIEW \
-  -c android.intent.category.BROWSABLE \
-  -d "https://<host>/releases/prod/online-survey-apps/<groupId>/<formId>/"
+adb logcat -s MainActivity
+# expect: OpenEel LAUNCH intent received: ...
+#         Forwarding deep link to JS: ...
 ```
 
-You should see `org.tangerinecentral.tangerine/.MainActivity` instead of `com.android.chrome`.
+## Note on verified App Links (optional)
 
-## Behavior once launched
-
-`www/js/app.js` → `handleDeepLink()` now, after restoring the session, opens the launched lesson
-inside **Tangerine's own in-app browser** (`views.openFormInWebView()` → the TangyCache cached
-WebView) rather than leaving it in RESPECT's WebView.
+For hosts you control that can serve `https://<host>/.well-known/assetlinks.json`, a verified App
+Link filter is an alternative/additional mechanism — but it is **not** required for this
+integration and does not support dynamically selected servers.

@@ -44,6 +44,7 @@ async function handleDeepLink(urlString) {
     const endpointParam = url.searchParams.get('endpoint');
     const authParam = url.searchParams.get('auth');
     const actorParam = url.searchParams.get('actor');
+    const ipcPackageParam = url.searchParams.get('xapiIpcPackage');
 
     if (endpointParam) {
       // Decode the endpoint fully (it may be double-encoded)
@@ -104,11 +105,17 @@ async function handleDeepLink(urlString) {
     // Prepare the logged-in groups screen underneath the lesson view.
     views.goHome();
 
-    // A RESPECT launch URL points at a lesson (learning unit). Open it in
-    // Tangerine's OWN in-app browser (the cached WebView) instead of leaving it
-    // in RESPECT's WebView. The full URL (including the endpoint/auth/actor
-    // launch params) is passed through so the lesson app can authenticate.
-    views.openFormInWebView(urlString);
+    // Open the launched lesson in Tangerine's OWN in-app browser (the cached WebView),
+    // passing the launch URL through VERBATIM (all query params intact: endpoint, auth,
+    // actor, activity_id, xapiIpcPackage). The form player reads those params from the URL to
+    // configure/relay xAPI, so the URL must not be stripped or rewritten here.
+    //
+    // Mark it as launched from RESPECT so that closing / backing out of the lesson
+    // returns the user to RESPECT (instead of leaving them on the Tangerine group list).
+    views.openFormInWebView(urlString, {
+      launchedFromRespect: true,
+      ipcPackage: ipcPackageParam || undefined
+    });
   } catch (err) {
     console.error('[App] Failed to handle deep link:', err);
   }

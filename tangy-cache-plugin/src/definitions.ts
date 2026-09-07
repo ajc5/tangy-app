@@ -63,10 +63,35 @@ export interface TangyCachePlugin {
   /**
    * Open a URL in an in-app WebView that uses CachingWebViewClient
    * (OkHttp + CacheInterceptor), ensuring all content is cached for offline use.
+   *
+   * When `launchedFromRespect` is true (a lesson opened via a RESPECT deep link),
+   * closing / backing out of the WebView returns the user to the RESPECT launcher
+   * instead of revealing the Tangerine UI underneath.
    */
   openCachedWebView(options: {
     url: string;
     showToolbar?: boolean;
     closeButtonText?: string;
+    /** True when the form is a RESPECT-launched lesson (opened via a deep link). */
+    launchedFromRespect?: boolean;
+    /** The launcher's package name (the `xapiIpcPackage` launch param). */
+    ipcPackage?: string;
   }): Promise<void>;
+
+  /**
+   * Forward xAPI statements (created by the Tangerine server) back to the RESPECT /
+   * Open Educational Experience Launcher that launched this lesson, via the launcher's
+   * xAPI-over-IPC service. Statements are relayed only — never originated by this app.
+   *
+   * @param endpoint       the xAPI endpoint URL from the RESPECT launch parameters
+   * @param auth           the auth header value from the RESPECT launch parameters
+   * @param ipcPackage     the launcher's package name (the `xapiIpcPackage` launch parameter)
+   * @param statementsJson JSON array of xAPI statements to relay (as produced by the server)
+   */
+  forwardXapiStatements(options: {
+    endpoint: string;
+    auth: string;
+    ipcPackage: string;
+    statementsJson: string;
+  }): Promise<{ ok: boolean; count: number; result: string }>;
 }
