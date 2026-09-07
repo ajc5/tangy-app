@@ -101,8 +101,14 @@ async function handleDeepLink(urlString) {
       api.recordLogin(deepLinkServer, deepLinkUsername);
     }
 
-    // Navigate to groups view
+    // Prepare the logged-in groups screen underneath the lesson view.
     views.goHome();
+
+    // A RESPECT launch URL points at a lesson (learning unit). Open it in
+    // Tangerine's OWN in-app browser (the cached WebView) instead of leaving it
+    // in RESPECT's WebView. The full URL (including the endpoint/auth/actor
+    // launch params) is passed through so the lesson app can authenticate.
+    views.openFormInWebView(urlString);
   } catch (err) {
     console.error('[App] Failed to handle deep link:', err);
   }

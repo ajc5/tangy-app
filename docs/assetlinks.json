@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "org.tangerinecentral.tangerine",
+      "sha256_cert_fingerprints": [
+        "1A:31:9B:63:20:ED:FF:93:19:D3:B9:8F:39:63:D1:2D:44:EA:B2:80:94:E0:06:DC:C5:90:8B:C3:0B:C0:F3:E4"
+      ]
+    }
+  }
+]

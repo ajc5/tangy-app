@@ -40,7 +40,7 @@ const MAX_RECENT_LOGINS = 10;
 
 // Always-available demo login, shown in the server/user dropdowns even after
 // the recent servers/usernames history is cleared.
-const DEMO_SERVER = 'http://35.209.168.52';
+const DEMO_SERVER = 'http://tangy.is-local.host';
 const DEMO_USERNAME = 'appuser';
 const DEMO_PASSWORD = 'Password1!';
 
@@ -369,6 +369,16 @@ const api = {
     // be re-fetched from the fresh respectUrl above, so we never show groups
     // or forms from an old server or an outdated server state.
     localStorage.removeItem('respectManifest');
+
+    // Apply the user's language from the server (source of truth after login).
+    // The server may not send it yet, but when it does we honor it — it takes
+    // precedence over the manual picker choice until the next login.
+    const language = (result.data && result.data.language) ||
+                     result.language ||
+                     (result.user && result.user.language);
+    if (language && typeof I18N !== 'undefined' && I18N && I18N.applyLocale) {
+      I18N.applyLocale(String(language).split('-')[0].toLowerCase());
+    }
 
     return result;
   },

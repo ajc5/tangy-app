@@ -173,21 +173,22 @@ const views = {
     const menuToggle = document.createElement('button');
     menuToggle.className = 'menu-btn menu-hamburger';
     menuToggle.textContent = '☰';
-    menuToggle.setAttribute('aria-label', 'Menu');
+    menuToggle.setAttribute('aria-label', t('menu.toggleLabel'));
     actions.appendChild(menuToggle);
 
     const dropdown = document.createElement('div');
     dropdown.className = 'menu-dropdown';
 
     if (loginMode) {
-      // Login screen: only "Clear Saved Servers & Usernames" is available.
+      // Login screen: only "Clear Login History" is available.
       const baseUrl = api.getBaseUrl();
       dropdown.innerHTML = `
         <div class="dropdown-info">
-          <span class="dropdown-info-label">Login</span>
-          <span class="dropdown-info-url">${baseUrl ? 'Server: ' + baseUrl + (api.isDemoServer(baseUrl) ? ' (demo)' : '') : 'No server selected'}</span>
+          <span class="dropdown-info-label">${t('menu.loginLabel')}</span>
+          <span class="dropdown-info-url">${baseUrl ? t('menu.serverPrefix') + baseUrl + (api.isDemoServer(baseUrl) ? t('common.demo') : '') : t('menu.noServerSelected')}</span>
         </div>
-        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
+        <button class="dropdown-item dropdown-item-clear">${t('menu.clearLoginHistory')}</button>
+        <button class="dropdown-item dropdown-item-lang">${t('menu.language')}</button>
       `;
       dropdown.querySelector('.dropdown-item-clear').addEventListener('click', () => {
         dropdown.classList.remove('open');
@@ -198,12 +199,13 @@ const views = {
       const baseUrl = api.getBaseUrl();
       dropdown.innerHTML = `
         <div class="dropdown-info">
-          <span class="dropdown-info-label">${api.getUsername() || 'Unknown'}</span>
-          <span class="dropdown-info-url">${baseUrl ? baseUrl + (api.isDemoServer(baseUrl) ? ' (demo)' : '') : 'No server'}</span>
+          <span class="dropdown-info-label">${api.getUsername() || t('menu.unknownUser')}</span>
+          <span class="dropdown-info-url">${baseUrl ? baseUrl + (api.isDemoServer(baseUrl) ? t('common.demo') : '') : t('menu.noServer')}</span>
         </div>
-        <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
-        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
-        <button class="dropdown-item dropdown-item-logout">Logout</button>
+        <button class="dropdown-item dropdown-item-respect">${t('menu.copyRespect')}</button>
+        <button class="dropdown-item dropdown-item-clear">${t('menu.clearLoginHistory')}</button>
+        <button class="dropdown-item dropdown-item-lang">${t('menu.language')}</button>
+        <button class="dropdown-item dropdown-item-logout">${t('menu.logout')}</button>
       `;
       dropdown.querySelector('.dropdown-item-logout').addEventListener('click', () => {
         dropdown.classList.remove('open');
@@ -217,14 +219,14 @@ const views = {
         dropdown.classList.remove('open');
         const link = api.getRespectUrl();
         if (!link) {
-          alert('No RESPECT URL available. Please log in again.');
+          alert(t('menu.noRespectUrl'));
           return;
         }
         navigator.clipboard.writeText(link).then(() => {
           // Brief visual feedback
           const btn = dropdown.querySelector('.dropdown-item-respect');
           const origText = btn.textContent;
-          btn.textContent = '✓ Copied!';
+          btn.textContent = t('menu.copied');
           setTimeout(() => { btn.textContent = origText; }, 2000);
         }).catch(() => {
           // Fallback for older browsers
@@ -236,7 +238,7 @@ const views = {
           document.body.removeChild(textArea);
           const btn = dropdown.querySelector('.dropdown-item-respect');
           const origText = btn.textContent;
-          btn.textContent = '✓ Copied!';
+          btn.textContent = t('menu.copied');
           setTimeout(() => { btn.textContent = origText; }, 2000);
         });
       });
@@ -244,16 +246,70 @@ const views = {
 
     actions.appendChild(dropdown);
 
+    // ── Language sub-menu (drill-down, opened from the Language item) ──
+    const submenu = document.createElement('div');
+    submenu.className = 'menu-dropdown menu-dropdown-sub';
+    submenu.innerHTML = `
+      <button type="button" class="dropdown-item dropdown-item-back">← ${t('menu.back')}</button>
+      <button type="button" class="dropdown-item dropdown-item-direction">
+        <span>${t('menu.switchDirection')}</span>
+        <span class="dropdown-item-direction-value">${I18N.getDir() === 'rtl' ? t('menu.rtl') : t('menu.ltr')}</span>
+      </button>
+      <div class="dropdown-divider"></div>
+      ${I18N.getLanguages().map(l => `
+        <button type="button" class="dropdown-item dropdown-item-lang${l.code === I18N.getLocale() ? ' current' : ''}" data-lang="${l.code}">
+          ${l.code === I18N.getLocale() ? '✓ ' : ''}${l.name}
+        </button>
+      `).join('')}
+    `;
+    actions.appendChild(submenu);
+
+    const openSubmenu = () => {
+      dropdown.classList.remove('open');
+      submenu.classList.add('open');
+    };
+    const closeSubmenu = () => submenu.classList.remove('open');
+
+    // "Language" item in the main menu opens the sub-menu.
+    dropdown.querySelector('.dropdown-item-lang').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSubmenu();
+    });
+
+    submenu.querySelector('.dropdown-item-back').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeSubmenu();
+      dropdown.classList.add('open');
+    });
+
+    submenu.querySelector('.dropdown-item-direction').addEventListener('click', () => {
+      const next = I18N.getDir() === 'rtl' ? 'ltr' : 'rtl';
+      I18N.setDirection(next);
+      this._rerenderForLocale();
+    });
+
+    submenu.querySelectorAll('.dropdown-item-lang[data-lang]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const code = btn.dataset.lang;
+        if (code && code !== I18N.getLocale()) {
+          I18N.setLocale(code);
+          this._rerenderForLocale();
+        }
+      });
+    });
+
     // Toggle dropdown
     menuToggle.addEventListener('click', (e) => {
       e.stopPropagation();
+      closeSubmenu();
       dropdown.classList.toggle('open');
     });
 
     // Close dropdown when clicking outside
     document.addEventListener('click', (e) => {
-      if (!dropdown.contains(e.target) && e.target !== menuToggle) {
+      if (!dropdown.contains(e.target) && e.target !== menuToggle && !submenu.contains(e.target)) {
         dropdown.classList.remove('open');
+        closeSubmenu();
       }
     });
 
@@ -271,6 +327,23 @@ const views = {
     this._currentGroupId = null;
     this._currentGroupName = null;
     this.renderGroups();
+  },
+
+  // Re-render the current screen after a language change so all labels update.
+  _rerenderForLocale() {
+    const token = localStorage.getItem('token');
+    const serverUrl = api.getBaseUrl();
+    if (token && serverUrl) {
+      if (this._currentGroupId && this._currentGroupName) {
+        this.renderForms(this._currentGroupId, this._currentGroupName);
+      } else {
+        this.renderGroups();
+      }
+    } else if (serverUrl) {
+      this.renderLoginStep2();
+    } else {
+      this.renderLoginStep1();
+    }
   },
 
   goBack() {
@@ -317,7 +390,7 @@ const views = {
    * to a clean login screen. Invoked from the burger menu on any screen.
    */
   clearLoginData() {
-    if (!confirm('Clear all saved servers and usernames?\n\nThis will remove stored login history and log you out.')) {
+    if (!confirm(t('confirm.clearLoginHistory'))) {
       return;
     }
     this._history = [];
@@ -348,7 +421,7 @@ const views = {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'suggest-item';
-      item.textContent = api.isDemoServer(server) ? `${server} (demo)` : server;
+      item.textContent = api.isDemoServer(server) ? `${server}${t('common.demo')}` : server;
       item.title = server;
       item.addEventListener('click', () => {
         api.setBaseUrl(server);
@@ -411,12 +484,12 @@ const views = {
       <div class="screen" id="login-step1">
         <div class="card">
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
-          <h1>Enter your server URL</h1>
+          <h1>${t('login.serverTitle')}</h1>
           <div class="input-suggest">
-            <input type="text" id="server-url" placeholder="https://your-server.com" value="${api.getBaseUrl()}" autocomplete="off">
+            <input type="text" id="server-url" placeholder="${t('login.serverPlaceholder')}" value="${api.getBaseUrl()}" autocomplete="off">
             <div class="suggest-list" id="server-suggest-list"></div>
           </div>
-          <button id="connect-btn">Connect</button>
+          <button id="connect-btn">${t('login.connect')}</button>
           <div id="step1-error" class="error"></div>
         </div>
       </div>
@@ -427,7 +500,7 @@ const views = {
     document.getElementById('connect-btn').addEventListener('click', () => {
       const url = document.getElementById('server-url').value.trim();
       if (!url) {
-        document.getElementById('step1-error').textContent = 'Please enter a server URL.';
+        document.getElementById('step1-error').textContent = t('errors.serverRequired');
         return;
       }
       api.setBaseUrl(url);
@@ -445,17 +518,17 @@ const views = {
         <div class="card">
           <img src="img/logo-login.png" alt="Tangerine" class="login-logo">
           <div class="server-info">
-            <label>Server:</label>
-            <span id="server-display">${serverUrl}${api.isDemoServer(serverUrl) ? ' (demo)' : ''}</span>
-            <button id="change-server-btn" class="link-btn">Change</button>
+            <label>${t('login.serverLabel')}</label>
+            <span id="server-display">${serverUrl}${api.isDemoServer(serverUrl) ? t('common.demo') : ''}</span>
+            <button id="change-server-btn" class="link-btn">${t('login.change')}</button>
           </div>
           <form id="login-form">
           <div class="input-suggest">
-            <input type="text" id="username" placeholder="Username" autocomplete="off">
+            <input type="text" id="username" placeholder="${t('login.usernamePlaceholder')}" autocomplete="off">
             <div class="suggest-list" id="username-suggest-list"></div>
           </div>
-          <input type="password" id="password" placeholder="Password" autocomplete="current-password">
-            <button type="submit" id="login-btn">Login</button>
+          <input type="password" id="password" placeholder="${t('login.passwordPlaceholder')}" autocomplete="current-password">
+            <button type="submit" id="login-btn">${t('login.login')}</button>
           </form>
           <div id="step2-error" class="error"></div>
       </div>
@@ -472,7 +545,7 @@ const views = {
       const username = document.getElementById('username').value.trim();
       const password = document.getElementById('password').value.trim();
       if (!username || !password) {
-        document.getElementById('step2-error').textContent = 'Please fill in all fields.';
+        document.getElementById('step2-error').textContent = t('errors.fillAll');
         return;
       }
       try {
@@ -498,8 +571,8 @@ const views = {
       history.pushState({ page: 'groups' }, '');
     }
     const container = document.getElementById('page-container');
-    container.innerHTML = `<div class="screen" id="groups"><h1>Groups</h1><ul id="group-list"></ul></div>`;
-    this.renderHeader({ title: 'Groups', showBack: true });
+    container.innerHTML = `<div class="screen" id="groups"><h1>${t('pages.groups')}</h1><ul id="group-list"></ul></div>`;
+    this.renderHeader({ title: t('pages.groups'), showBack: true });
     const list = document.getElementById('group-list');
     try {
       const groups = await api.getGroups();
@@ -532,7 +605,7 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
-        dlBtn.title = 'Pin all forms in this group for offline use';
+        dlBtn.title = t('pages.pinGroup');
         if (this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
@@ -554,7 +627,7 @@ const views = {
         list.appendChild(li);
       });
       if (groups.length === 0) {
-        container.innerHTML += `<div class="error">No groups found</div>`;
+        container.innerHTML += `<div class="error">${t('errors.noGroups')}</div>`;
       }
     } catch (err) {
       console.log('[VIEWS] renderGroups error:', err);
@@ -564,8 +637,9 @@ const views = {
 
   async renderForms(groupId, groupName) {
     const container = document.getElementById('page-container');
-    container.innerHTML = `<div class="screen" id="forms"><h1>Forms - ${groupName}</h1><ul id="form-list"></ul></div>`;
-    this.renderHeader({ title: `Forms - ${groupName}`, showBack: true });
+    const formsTitle = t('pages.formsTitle', { groupName });
+    container.innerHTML = `<div class="screen" id="forms"><h1>${formsTitle}</h1><ul id="form-list"></ul></div>`;
+    this.renderHeader({ title: formsTitle, showBack: true });
     const list = document.getElementById('form-list');
     try {
       console.log('[VIEWS] renderForms called with:', { groupId, groupName });
@@ -578,7 +652,7 @@ const views = {
         return nameA.localeCompare(nameB);
       });
       forms.forEach(form => {
-        const formName = form.title || form.name || form.id || 'Unnamed Form';
+        const formName = form.title || form.name || form.id || t('pages.unnamedForm');
         const formId = form.id;
         // Use OPDS open-access URL when available, otherwise construct from base
         const formUrl = form._openAccessUrl
@@ -597,7 +671,7 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
-        dlBtn.title = 'Pin this form for offline use';
+        dlBtn.title = t('pages.pinForm');
         if (this._isCached('form:' + formUrl) || this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
@@ -613,7 +687,7 @@ const views = {
         list.appendChild(li);
       });
       if (forms.length === 0) {
-        container.innerHTML += `<div class="error">No forms found for this group</div>`;
+        container.innerHTML += `<div class="error">${t('errors.noForms')}</div>`;
       }
 
       // Check the OPDS `modified` dates for cached forms and refresh any that
@@ -627,7 +701,7 @@ const views = {
 
   openFormInWebView(url) {
     if (!url) {
-      alert('No URL available for this form.');
+      alert(t('alerts.noUrl'));
       return;
     }
     const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
@@ -642,7 +716,7 @@ const views = {
         window.Capacitor.Plugins.TangyCache.openCachedWebView({
           url: url,
           showToolbar: true,
-          closeButtonText: 'Close'
+          closeButtonText: t('common.close')
         }).catch(err => {
           console.error('[VIEWS] cached WebView failed:', err);
           this._openInAppBrowserFallback(url, isNative);
@@ -651,20 +725,20 @@ const views = {
         this._openInAppBrowserFallback(url, isNative);
       } else if (isNative) {
         console.error('[VIEWS] No cached WebView or InAppBrowser');
-        alert('No browser plugin available.');
+        alert(t('alerts.noBrowserPlugin'));
       } else {
         const win = window.open(url, '_blank');
-        if (!win) alert('Popup blocked. Please allow popups for:\n\n' + url);
+        if (!win) alert(t('alerts.popupBlocked') + url);
       }
     } catch (e) {
       console.error('[VIEWS] Error opening form:', e);
-      alert('Could not open form:\n\n' + url);
+      alert(t('alerts.couldNotOpen') + url);
     }
   },
 
   _openInAppBrowserFallback(url, isNative) {
     if (!isNative || !window.Capacitor.Plugins.InAppBrowser) {
-      alert('Cannot open form: no browser available.');
+      alert(t('alerts.cannotOpen'));
       return;
     }
     console.log('[VIEWS] Opening form in InAppBrowser (fallback):', url);
@@ -673,7 +747,7 @@ const views = {
       options: {
         showToolbar: true,
         showURL: false,
-        closeButtonText: 'Close',
+        closeButtonText: t('common.close'),
         toolbarPosition: 0,
         showNavigationButtons: true,
         leftToRight: false,
@@ -689,7 +763,7 @@ const views = {
       }
     }).catch(err => {
       console.error('[VIEWS] InAppBrowser failed:', err);
-      alert('Failed to open form: ' + (err.message || 'Unknown error'));
+      alert(t('alerts.failedToOpen') + (err.message || t('alerts.unknownError')));
     });
   },
 
@@ -971,7 +1045,7 @@ const views = {
   _showRefreshIndicator(count) {
     const el = document.createElement('div');
     el.className = 'refresh-indicator';
-    el.textContent = `↻ Updating ${count} cached form${count === 1 ? '' : 's'}…`;
+    el.textContent = t(count === 1 ? 'refresh.updatingOne' : 'refresh.updatingMany', { count });
     const container = document.getElementById('page-container');
     if (container) container.prepend(el);
     return el;
@@ -980,10 +1054,10 @@ const views = {
   _hideRefreshIndicator(el, refreshed, failed) {
     if (!el || !el.parentNode) return;
     if (refreshed > 0) {
-      el.textContent = '✓ Cached forms updated to latest version';
+      el.textContent = t('refresh.updated');
       el.style.background = 'rgba(76, 175, 80, 0.14)';
     } else {
-      el.textContent = '↷ Could not refresh — cached forms kept as-is';
+      el.textContent = t('refresh.failed');
       el.style.background = 'rgba(0, 0, 0, 0.06)';
     }
     setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 2500);
@@ -1058,7 +1132,7 @@ const views = {
         this.goBack();
       } else if (document.getElementById('group-list')) {
         // On groups page — confirm logout
-        if (confirm('Log out and return to the login screen?')) {
+        if (confirm(t('confirm.logout'))) {
           this.logout();
         } else {
           // Stay on page — push state back so next back still works

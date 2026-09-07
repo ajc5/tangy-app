@@ -410,7 +410,7 @@ li:active {
 .menu-dropdown {
   position: absolute;
   top: 100%;
-  right: 0;
+  inset-inline-end: 0;
   margin-top: 4px;
   min-width: 220px;
   background: var(--tangy-paper-color);
@@ -452,12 +452,12 @@ li:active {
   width: 100%;
   padding: 14px 16px;
   background: var(--tangy-paper-color);
-  color: var(--tangy-primary-text-color);
+  color: var(--tangy-primary-color);
   border: none;
   border-radius: 0;
   font-family: Roboto, 'Helvetica Neue', sans-serif;
   font-size: 14px;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
   transition: background 0.15s;
   line-height: 1.4;
@@ -534,7 +534,7 @@ li:active {
 .suggest-item {
   display: block;
   width: 100%;
-  text-align: left;
+  text-align: start;
   padding: 12px 14px;
   background: transparent;
   border: none;
@@ -573,6 +573,40 @@ li:active {
   color: var(--tangy-primary-color);
   font-size: 13px;
   text-align: center;
+}
+
+/* ---- Language sub-menu (header dropdown) ---- */
+.menu-dropdown-sub {
+  min-width: 260px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.dropdown-item-back {
+  color: var(--tangy-primary-color);
+  font-weight: 500;
+}
+
+.dropdown-item-direction {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dropdown-item-direction-value {
+  color: var(--tangy-primary-color);
+  font-weight: 600;
+}
+
+.dropdown-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.dropdown-item-lang.current {
+  color: var(--tangy-primary-color);
+  font-weight: 600;
 }
 
 /* ---- Material Icons ---- */

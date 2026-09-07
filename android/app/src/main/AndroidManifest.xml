@@ -38,6 +38,31 @@
                 <data android:scheme="https" />
             </intent-filter>
 
+            <!--
+                Verified App Link so RESPECT's OPEN action (which uses
+                FLAG_ACTIVITY_REQUIRE_NON_BROWSER on Android 11+) resolves lesson
+                URLs to THIS app and launches it, instead of falling back to
+                RESPECT's own WebView. Without verification, Android 12+ excludes
+                this unverified filter from URL resolution entirely.
+
+                To make verification succeed you must also:
+                  1. Replace YOUR-TANGERINE-SERVER-HOST below with the https host
+                     of the Tangerine server that serves the lesson URLs.
+                  2. Serve this app's statement at
+                     https://<host>/.well-known/assetlinks.json using a cert
+                     fingerprint that matches the installed build
+                     (see docs/assetlinks.json).
+                  3. The host must be reachable over HTTPS — App Links never
+                     verify over plain http.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="YOUR-TANGERINE-SERVER-HOST" />
+            </intent-filter>
+
         </activity>
 
         <provider
