@@ -163,16 +163,13 @@ const api = {
   },
 
   /**
-   * Clear ALL saved login data: the recent servers/usernames history plus the
-   * currently stored session (server URL, username, token, respect data).
+   * Clear ONLY the recent login history (the servers/usernames offered as
+   * suggestions on the login screens). Does NOT touch the current session
+   * (server URL, username, token, RESPECT data) — if you're logged in you
+   * stay logged in.
    */
-  clearAllLoginData() {
+  clearLoginHistory() {
     localStorage.removeItem('recentLogins');
-    localStorage.removeItem('serverUrl');
-    localStorage.removeItem('username');
-    localStorage.removeItem('token');
-    localStorage.removeItem('respectUrl');
-    localStorage.removeItem('respectManifest');
   },
 
   /**

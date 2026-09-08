@@ -195,27 +195,27 @@ const views = {
     dropdown.className = 'menu-dropdown';
 
     if (loginMode) {
-      // Login screen: only "Clear Saved Servers & Usernames" is available.
+      // Login screen: only "Clear Login History" is available.
       dropdown.innerHTML = `
         <div class="dropdown-info">
           <span class="dropdown-info-label">Login</span>
           <span class="dropdown-info-url">${api.getBaseUrl() ? 'Server: ' + api.getBaseUrl() : 'No server selected'}</span>
         </div>
-        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
+        <button class="dropdown-item dropdown-item-clear">Clear Login History</button>
       `;
       dropdown.querySelector('.dropdown-item-clear').addEventListener('click', () => {
         dropdown.classList.remove('open');
-        this.clearLoginData();
+        this.clearLoginHistory();
       });
     } else {
-      // Logged-in screen: RESPECT link, Clear saved data, Logout.
+      // Logged-in screen: RESPECT link, Clear Login History, Logout.
       dropdown.innerHTML = `
         <div class="dropdown-info">
           <span class="dropdown-info-label">${api.getUsername() || 'Unknown'}</span>
           <span class="dropdown-info-url">${api.getBaseUrl() || 'No server'}</span>
         </div>
         <button class="dropdown-item dropdown-item-respect">Copy RESPECT Link</button>
-        <button class="dropdown-item dropdown-item-clear">Clear Saved Servers &amp; Usernames</button>
+        <button class="dropdown-item dropdown-item-clear">Clear Login History</button>
         <button class="dropdown-item dropdown-item-logout">Logout</button>
       `;
       dropdown.querySelector('.dropdown-item-logout').addEventListener('click', () => {
@@ -224,7 +224,7 @@ const views = {
       });
       dropdown.querySelector('.dropdown-item-clear').addEventListener('click', () => {
         dropdown.classList.remove('open');
-        this.clearLoginData();
+        this.clearLoginHistory();
       });
       dropdown.querySelector('.dropdown-item-respect').addEventListener('click', () => {
         dropdown.classList.remove('open');
@@ -326,24 +326,25 @@ const views = {
   },
 
   /**
-   * Clear every saved server/username plus the current session, then return
-   * to a clean login screen. Invoked from the burger menu on any screen.
+   * Clear ONLY the recent login history (the saved servers/usernames offered
+   * as suggestions on the login screens). The current session is untouched:
+   * if you're logged in you stay logged in and remain on the current screen.
+   * Invoked from the burger menu on any screen.
    */
-  clearLoginData() {
-    if (!confirm('Clear all saved servers and usernames?\n\nThis will remove stored login history and log you out.')) {
+  clearLoginHistory() {
+    if (!confirm('Clear saved login history?\n\nThis will remove recent servers and usernames from this device. Your current login is not affected.')) {
       return;
     }
-    this._history = [];
-    this._currentGroupId = null;
-    this._currentGroupName = null;
-    api.clearAllLoginData();
-    this.removeMenuBar();
-    if (history.length > 1) {
-      history.go(-(history.length - 1));
-      setTimeout(() => this.renderLoginStep1(), 50);
-      return;
+    api.clearLoginHistory();
+    // Refresh whichever login step is shown so the cleared suggestions
+    // disappear. On logged-in screens (groups/forms) there is no visible
+    // recent-logins UI, so nothing needs re-rendering and the session
+    // stays intact.
+    if (document.getElementById('server-url')) {
+      this.renderLoginStep1(false);
+    } else if (document.getElementById('username')) {
+      this.renderLoginStep2(false);
     }
-    this.renderLoginStep1();
   },
 
   /**
