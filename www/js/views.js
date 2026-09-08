@@ -49,6 +49,32 @@ const views = {
     buttonEl.style.opacity = '1';
   },
 
+  // After the form list renders, flip a form's ⬇ to ✓ when the native cache
+  // actually holds the form's shell URL. This makes the badge reflect content
+  // that was ADOPTED from the RESPECT launcher's cache (either served during a
+  // RESPECT-launched session or during an offline direct open), not only items
+  // explicitly pinned here. It also re-marks items that were previously pinned
+  // so the badge stays correct across sessions.
+  async _reconcileFormBadge(buttonEl, formUrl, groupId) {
+    try {
+      const formKey = 'form:' + formUrl;
+      if (this._isCached(formKey) || this._isCached('group:' + groupId)) return;
+      const baseUrl = formUrl.replace(/#.*$/, '');
+      if (await this._urlIsCached(baseUrl)) {
+        this._markCached(formKey);
+        const existing = this._getPinnedUrls(formKey);
+        if (!existing.includes(baseUrl)) {
+          existing.push(baseUrl);
+          this._savePinnedUrls(formKey, existing);
+        }
+        this._setDownloadBtnCached(buttonEl);
+        console.log('[VIEWS] Auto-marked form cached (found on disk):', formUrl);
+      }
+    } catch (e) {
+      console.warn('[VIEWS] Badge reconcile failed:', e);
+    }
+  },
+
   // ── Pinned-URL tracking (so uncaching can evict the right disk entries) ──
 
   _getPinnedUrls(key) {
@@ -467,9 +493,9 @@ const views = {
     this._renderRecentUsernames();
   },
 
-  async renderGroups() {
+  async renderGroups({ skipHistory = false } = {}) {
     // Push browser history entry so back button fires popstate
-    if (this._history.length === 0) {
+    if (!skipHistory && this._history.length === 0) {
       history.pushState({ page: 'groups' }, '');
     }
     const container = document.getElementById('page-container');
@@ -583,6 +609,9 @@ const views = {
           this.cacheFormResources(formUrl, dlBtn);
         });
         li.appendChild(dlBtn);
+        // Flip ⬇ to ✓ if this form's shell is already on the native cache (e.g.
+        // adopted from RESPECT). Fire-and-forget; resolves after a native probe.
+        this._reconcileFormBadge(dlBtn, formUrl, groupId);
 
         li.addEventListener('click', () => this.openFormInWebView(formUrl));
         list.appendChild(li);

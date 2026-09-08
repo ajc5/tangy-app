@@ -63,6 +63,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -109,6 +110,12 @@ class TangyCachePlugin : Plugin() {
     private val gson = Gson()
     private val scope = CoroutineScope(Dispatchers.IO)
     private val pinJobs = ConcurrentHashMap<String, PinJob>()
+
+    // URLs with a background cache-refresh already in flight (dedupes the
+    // fire-and-forget refreshes kicked off from shouldInterceptRequest so a
+    // repeated open never piles up duplicate network calls for one resource).
+    private val backgroundRefreshInFlight = ConcurrentHashMap<String, Boolean>()
+
     private var proxyServer: CacheProxyServer? = null
     private var connectivityCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -169,6 +176,12 @@ class TangyCachePlugin : Plugin() {
     private var ipcHttpClient: HttpIpcClient? = null
     private var ipcHttpClientPackage: String? = null
 
+    // The RESPECT launcher package. When this app is opened DIRECTLY (not
+    // launched by the launcher) we still treat the launcher's HTTP-over-IPC
+    // cache as an extra offline source, adopting whatever it serves into our
+    // own cache so we become self-sufficient.
+    private val DEFAULT_RESPECT_PACKAGE = "world.respect.app"
+
     private fun cacheDir(): File {
         val dir = File(activity?.cacheDir, "tangy-cache")
         if (!dir.exists()) dir.mkdirs()
@@ -220,30 +233,102 @@ class TangyCachePlugin : Plugin() {
         return hash
     }
 
-    private fun storeOnDisk(url: String, mimeType: String, body: String, headers: Map<String, String>?) {
+    private fun storeBytesOnDisk(url: String, mimeType: String, bytes: ByteArray, headers: Map<String, String>?) {
         val filename = urlToFilename(url)
-        File(cacheDir(), filename).writeText(body, Charsets.UTF_8)
+        File(cacheDir(), filename).writeBytes(bytes)
         val meta = CacheMeta(
             url = url, mimeType = mimeType,
             headers = headers ?: emptyMap(),
             storedAt = System.currentTimeMillis(),
-            sizeBytes = body.toByteArray(Charsets.UTF_8).size.toLong()
+            sizeBytes = bytes.size.toLong()
         )
         File(metaDir(), "$filename.json").writeText(gson.toJson(meta), Charsets.UTF_8)
     }
 
-    private fun retrieveFromDisk(url: String): Pair<String, CacheMeta>? {
+    // Text convenience retained for the JS-facing store()/retrieve() API. The
+    // OkHttp cache paths (CacheInterceptor / IPC adoption) store raw bytes so
+    // binary resources (images, audio, video) are never corrupted.
+    private fun storeOnDisk(url: String, mimeType: String, body: String, headers: Map<String, String>?) {
+        storeBytesOnDisk(url, mimeType, body.toByteArray(Charsets.UTF_8), headers)
+    }
+
+    private fun retrieveBytesFromDisk(url: String): Pair<ByteArray, CacheMeta>? {
         val filename = urlToFilename(url)
         val file = File(cacheDir(), filename)
         val metaFile = File(metaDir(), "$filename.json")
         if (!file.exists()) return null
-        val body = file.readText(Charsets.UTF_8)
+        val bytes = file.readBytes()
         val meta = if (metaFile.exists()) {
             gson.fromJson(metaFile.readText(Charsets.UTF_8), CacheMeta::class.java)
         } else {
             CacheMeta(url, "application/octet-stream", emptyMap(), 0L, 0L)
         }
-        return Pair(body, meta)
+        return Pair(bytes, meta)
+    }
+
+    private fun retrieveFromDisk(url: String): Pair<String, CacheMeta>? {
+        return retrieveBytesFromDisk(url)?.let { (bytes, meta) ->
+            Pair(String(bytes, Charsets.UTF_8), meta)
+        }
+    }
+
+    // True when the device currently has an active network (any type). Used to
+    // skip the network attempt when fully offline (airplane mode / radios off),
+    // which avoids DNS/connect stalls that otherwise delay cached content for
+    // seconds-to-tens-of-seconds. Deliberately does NOT check
+    // NET_CAPABILITY_INTERNET, so a LAN-only server (no internet validation)
+    // still counts as "online" and API/data fetches stay fresh.
+    private fun hasActiveNetwork(): Boolean {
+        val cm = activity?.getSystemService(Context.CONNECTIVITY_SERVICE)
+            as? ConnectivityManager ?: return true
+        return cm.activeNetwork != null
+    }
+
+    // Offline path: serve the URL from our disk cache; if we don't have it,
+    // ask the RESPECT launcher's cache over IPC (adopting whatever it serves
+    // into our own cache). Returns null when neither can help.
+    private fun serveFromDiskOrRespect(request: Request): Response? {
+        val url = request.url.toString()
+        val fallback = retrieveBytesFromDisk(url)
+        if (fallback != null) {
+            val (body, meta) = fallback
+            Log.d(TAG, "CacheInterceptor OFFLINE_FALLBACK $url")
+            return Response.Builder()
+                .request(request)
+                .protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK (offline)")
+                .header("Content-Type", meta.mimeType)
+                .header("X-Cache", "OFFLINE_FALLBACK")
+                .body(body.toResponseBody(meta.mimeType.toMediaType()))
+                .build()
+        }
+        // Direct (non-launcher) offline opens: if our own cache lacks the
+        // resource, ask the RESPECT launcher's cache over IPC and adopt
+        // whatever it can serve into our own cache.
+        return tryRespectCacheOfflineFallback(request)
+    }
+
+    // Fire-and-forget network refresh of a cached resource, used when the WebView
+    // serves a pinned copy instantly (cache-first). While ONLINE this keeps the
+    // pinned copy current for the NEXT open (the network-first CacheInterceptor
+    // stores the fresh bytes on success), preserving the auto-refresh behaviour a
+    // network-first open used to give. Offline (or server unreachable) the
+    // attempt fails harmlessly in the background and the served copy is used.
+    private fun refreshCachedResourceInBackground(url: String) {
+        if (backgroundRefreshInFlight.putIfAbsent(url, true) != null) return
+        scope.launch {
+            try {
+                val okRequest = Request.Builder().url(url).get().build()
+                val client = if (currentIpcPackage.isNullOrBlank()) okHttpClient else respectOkHttpClient
+                val response = client.newCall(okRequest).execute()
+                response.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Background cache refresh failed for $url: ${e.message}")
+            } finally {
+                backgroundRefreshInFlight.remove(url)
+            }
+        }
     }
 
     inner class CacheInterceptor : Interceptor {
@@ -258,6 +343,18 @@ class TangyCachePlugin : Plugin() {
                 return chain.proceed(request)
             }
 
+            // Truly offline (no active network at all — airplane mode / radios
+            // off): don't attempt a connection. Serving straight from disk
+            // avoids the DNS/connect stalls that make the FIRST offline load of
+            // a cached page take 20-30s (or hang) before falling back to cache.
+            // When ANY network is present we stay network-first below so API and
+            // feed data never goes stale.
+            if (!hasActiveNetwork()) {
+                Log.d(TAG, "CacheInterceptor OFFLINE_FASTPATH $url — no active network")
+                serveFromDiskOrRespect(request)?.let { return it }
+                throw IOException("Offline (no active network) and not cached: $url")
+            }
+
             // Network-first: always try the network when online so we get
             // FRESH data (group/form lists, OPDS feeds, form HTML). The disk
             // cache is used as an OFFLINE fallback (and for manual pins).
@@ -269,14 +366,14 @@ class TangyCachePlugin : Plugin() {
 
                 if (networkResponse.isSuccessful && networkResponse.body != null) {
                     try {
-                        val bodyString = networkResponse.body!!.string()
+                        val bodyBytes = networkResponse.body!!.bytes()
                         val contentType = networkResponse.header("Content-Type")
                             ?: "application/octet-stream"
                         val headers = mutableMapOf<String, String>()
                         networkResponse.headers.names().forEach { name ->
                             networkResponse.headers[name]?.let { headers[name] = it }
                         }
-                        storeOnDisk(url, contentType, bodyString, headers)
+                        storeBytesOnDisk(url, contentType, bodyBytes, headers)
                         Log.d(TAG, "CacheInterceptor STORED $url")
 
                         val rebuilt = Response.Builder()
@@ -288,7 +385,7 @@ class TangyCachePlugin : Plugin() {
                         networkResponse.headers.names().forEach { name ->
                             networkResponse.headers[name]?.let { rebuilt.header(name, it) }
                         }
-                        rebuilt.body(bodyString.toResponseBody(contentType.toMediaType()))
+                        rebuilt.body(bodyBytes.toResponseBody(contentType.toMediaType()))
                         networkResponse.close()
                         rebuilt.build()
                     } catch (e: Exception) {
@@ -301,22 +398,7 @@ class TangyCachePlugin : Plugin() {
             } catch (e: Exception) {
                 // Network failed — try cache as fallback for offline resilience
                 Log.w(TAG, "CacheInterceptor network failed for $url: ${e.message} — trying cache fallback")
-                val fallback = retrieveFromDisk(url)
-                if (fallback != null) {
-                    val (body, meta) = fallback
-                    Log.d(TAG, "CacheInterceptor OFFLINE_FALLBACK $url")
-                    Response.Builder()
-                        .request(request)
-                        .protocol(okhttp3.Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK (offline)")
-                        .header("Content-Type", meta.mimeType)
-                        .header("X-Cache", "OFFLINE_FALLBACK")
-                        .body(body.toResponseBody(meta.mimeType.toMediaType()))
-                        .build()
-                } else {
-                    throw e
-                }
+                serveFromDiskOrRespect(request) ?: throw e
             }
         }
     }
@@ -344,7 +426,28 @@ class TangyCachePlugin : Plugin() {
                 val ipcResponse = client.newCall(ipcRequest).execute()
                 if (ipcResponse.isSuccessful) {
                     Log.d(TAG, "RespectIpcCache HIT ${request.url} via $pkg")
-                    ipcResponse
+                    // Adopt the launcher-served bytes into our OWN cache so the
+                    // resource is available offline even without the launcher.
+                    val url = request.url.toString()
+                    val bodyBytes = ipcResponse.body?.bytes() ?: ByteArray(0)
+                    val contentType = ipcResponse.header("Content-Type") ?: "application/octet-stream"
+                    val headers = mutableMapOf<String, String>()
+                    ipcResponse.headers.names().forEach { name ->
+                        ipcResponse.headers[name]?.let { headers[name] = it }
+                    }
+                    storeBytesOnDisk(url, contentType, bodyBytes, headers)
+                    val rebuilt = Response.Builder()
+                        .request(request)
+                        .protocol(ipcResponse.protocol)
+                        .code(ipcResponse.code)
+                        .message(ipcResponse.message)
+                        .header("X-Cache", "RESPECT_IPC_HIT")
+                    ipcResponse.headers.names().forEach { name ->
+                        ipcResponse.headers[name]?.let { rebuilt.header(name, it) }
+                    }
+                    rebuilt.body(bodyBytes.toResponseBody(contentType.toMediaType()))
+                    ipcResponse.close()
+                    rebuilt.build()
                 } else {
                     Log.d(TAG, "RespectIpcCache MISS ${request.url} (${ipcResponse.code}) - falling back")
                     ipcResponse.close()
@@ -402,6 +505,63 @@ class TangyCachePlugin : Plugin() {
         ipcHttpClientPackage = null
     }
 
+    /**
+     * Used by the direct (non-launcher) offline path. When the network is down
+     * and our own cache has no copy, ask the RESPECT launcher's HTTP-over-IPC
+     * cache (`only-if-cached`) for the resource. If the launcher has it we serve
+     * it AND adopt it into our own disk cache, so the resource becomes locally
+     * available (and the UI checkmark becomes truthful) even if the launcher is
+     * later unavailable. Returns null when the launcher can't help.
+     */
+    private fun tryRespectCacheOfflineFallback(request: Request): Response? {
+        // Launched by RESPECT? The upstream RespectIpcCacheInterceptor already
+        // asked the launcher, so don't ask again here.
+        if (!currentIpcPackage.isNullOrBlank()) return null
+        val act = activity ?: return null
+        // Only bind when the launcher is actually installed and exposes the
+        // service so we never stall a page load on an unresolvable package.
+        val probe = Intent("org.openeel.action.httpoveripc.connect").setPackage(DEFAULT_RESPECT_PACKAGE)
+        if (act.packageManager.queryIntentServices(probe, 0).isEmpty()) {
+            return null
+        }
+        val client = ensureIpcClient(DEFAULT_RESPECT_PACKAGE) ?: return null
+        return try {
+            val ipcRequest = request.newBuilder()
+                .header("Cache-Control", "only-if-cached")
+                .build()
+            val ipcResponse = client.newCall(ipcRequest).execute()
+            if (ipcResponse.isSuccessful && ipcResponse.body != null) {
+                val url = request.url.toString()
+                val bodyBytes = ipcResponse.body!!.bytes()
+                val contentType = ipcResponse.header("Content-Type") ?: "application/octet-stream"
+                val headers = mutableMapOf<String, String>()
+                ipcResponse.headers.names().forEach { name ->
+                    ipcResponse.headers[name]?.let { headers[name] = it }
+                }
+                storeBytesOnDisk(url, contentType, bodyBytes, headers)
+                Log.d(TAG, "RespectIpcCache OFFLINE_ADOPT $url via $DEFAULT_RESPECT_PACKAGE")
+                val rebuilt = Response.Builder()
+                    .request(request)
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK (respect-ipc)")
+                    .header("X-Cache", "RESPECT_IPC_ADOPT")
+                ipcResponse.headers.names().forEach { name ->
+                    ipcResponse.headers[name]?.let { rebuilt.header(name, it) }
+                }
+                rebuilt.body(bodyBytes.toResponseBody(contentType.toMediaType()))
+                ipcResponse.close()
+                rebuilt.build()
+            } else {
+                ipcResponse.close()
+                null
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "RespectIpcCache offline fallback failed for ${request.url}: ${e.message}")
+            null
+        }
+    }
+
     inner class CachingWebViewClient : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
@@ -421,6 +581,49 @@ class TangyCachePlugin : Plugin() {
             if (request == null || request.method.uppercase() != "GET") return null
             val reqUrl = request.url.toString()
             try {
+                // Cache-first for resources we already hold on disk (pinned form
+                // assets, previously-seen CSS/JS/fonts). Waiting on the network
+                // first — as the CacheInterceptor does for freshness — makes an
+                // offline/DNS-unreachable host stall for its full connect/DNS
+                // timeout before the cache fallback runs. When that resource is
+                // render-blocking (form HTML, CSS incl. Google Fonts, JS) the
+                // WHOLE first load appears stuck for 20-30s (or forever); the
+                // second open only feels instant because the OS has since
+                // negative-cached the failed DNS/connection and fails fast.
+                // Serving the pinned copy immediately makes cached forms open
+                // instantly in ANY connectivity state. Resources we do NOT have
+                // are fetched network-first below (fresh download + stored), so
+                // first-time online opens of unpinned forms are unchanged.
+                val cached = retrieveBytesFromDisk(reqUrl)
+                if (cached != null) {
+                    val (body, meta) = cached
+                    Log.d(TAG, "CachingWebViewClient CACHE_HIT $reqUrl")
+                    val mimeType = meta.mimeType.substringBefore(";")
+                    val encoding = meta.mimeType.substringAfter("charset=", "")
+                        .ifEmpty { null }
+                    val respHeaders = mutableMapOf("X-Cache" to "CACHE_HIT")
+                    // Skip length/encoding headers: OkHttp may have transparently
+                    // decompressed the stored body, so the original values can
+                    // mismatch the bytes we serve. WebView derives length itself.
+                    meta.headers.forEach { (k, v) ->
+                        if (k.equals("Content-Length", true) ||
+                            k.equals("Content-Encoding", true) ||
+                            k.equals("Transfer-Encoding", true)) return@forEach
+                        respHeaders[k] = v
+                    }
+                    // While online, opportunistically refresh this resource in the
+                    // background (deduped) so the pinned copy stays current for
+                    // future opens — rendering is NOT blocked on it. When offline
+                    // or the server is unreachable the attempt fails harmlessly.
+                    if (hasActiveNetwork()) {
+                        refreshCachedResourceInBackground(reqUrl)
+                    }
+                    return WebResourceResponse(
+                        mimeType, encoding, 200, "OK",
+                        respHeaders, body.inputStream()
+                    )
+                }
+
                 val okRequest = Request.Builder().url(reqUrl).apply {
                     request.requestHeaders.entries.forEach {
                         header(it.key, it.value)

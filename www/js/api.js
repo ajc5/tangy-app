@@ -190,10 +190,15 @@ const api = {
           const token = luUrl.searchParams.get('respectToken');
           if (token) return token;
         }
-        // 2. Extract token from links array (OPDS catalog link)
+        // 2. Extract token from links array (the groups/collection feed link)
         if (parsed && parsed.links && Array.isArray(parsed.links)) {
+          const FEED_RELS = [
+            'http://opds-spec.org/catalog',
+            'http://opds-spec.org/collection',
+            'collection'
+          ];
           const catalogLink = parsed.links.find(
-            l => l.rel === 'http://opds-spec.org/catalog' && l.href
+            l => l && l.href && FEED_RELS.includes(String(l.rel || ''))
           );
           if (catalogLink) {
             const linkUrl = new URL(catalogLink.href, this.getBaseUrl());
@@ -222,7 +227,10 @@ const api = {
    * Resolve the learningUnits (groups) URL from the stored OPDS root document.
    * The OPDS root may store the groups URL in:
    *   1. A top-level `learningUnits` property
-   *   2. A `links` entry with rel="http://opds-spec.org/catalog"
+   *   2. A `links` entry pointing at the groups feed — servers use different
+   *      rels: `http://opds-spec.org/catalog`, `collection`, or a bare href to
+   *      the `/opds/groups` feed (Tangerine respect-app-manifest/v2 uses rel
+   *      `collection`).
    *   3. A `navigation` entry (groups returned directly in manifest)
    * Returns the resolved URL string, or null to fall back to `/groups`.
    */
@@ -235,11 +243,33 @@ const api = {
       return `${this.getBaseUrl()}${doc.learningUnits}`;
     }
 
-    // 2. OPDS links array — find the catalog link for groups
+    // 2. OPDS links array — find the link that points at the groups feed.
     if (doc && doc.links && Array.isArray(doc.links)) {
-      const catalogLink = doc.links.find(
-        l => l.rel === 'http://opds-spec.org/catalog'
-      );
+      const GROUPS_RELS = [
+        'http://opds-spec.org/catalog',
+        'http://opds-spec.org/collection',
+        'http://opds-spec.org/group',
+        'collection'
+      ];
+      const catalogLink = doc.links.find((l) => {
+        if (!l || !l.href) return false;
+        const rel = String(l.rel || '');
+        // Skip links that obviously aren't the groups feed.
+        if (rel === 'self' ||
+            rel === 'https://id.openeel.org/rel/app-launch-uri' ||
+            rel === 'app-launch-uri') {
+          return false;
+        }
+        if (GROUPS_RELS.includes(rel)) return true;
+        // Fallback: the href's path is the OPDS groups feed.
+        try {
+          const path = new URL(l.href, this.getBaseUrl()).pathname.replace(/\/+$/, '');
+          if (path.endsWith('/opds/groups')) return true;
+        } catch (e) {
+          // Ignore unparseable hrefs.
+        }
+        return false;
+      });
       if (catalogLink && catalogLink.href) {
         if (catalogLink.href.startsWith('http')) {
           return catalogLink.href;
@@ -316,6 +346,17 @@ const api = {
       if (response.ok) {
         const manifest = await response.json();
         console.log('[API] Manifest response:', JSON.stringify(manifest, null, 2).slice(0, 500));
+        // Only trust a manifest that belongs to the CURRENT server. If the
+        // stored respectUrl points at a different server than the one the shell
+        // is connected to (e.g. stale after a RESPECT deep link switched
+        // servers without a login), discard it rather than rendering another
+        // server's groups/forms.
+        if (!this._manifestBelongsToServer(manifest, this.getBaseUrl())) {
+          console.warn('[API] respectUrl manifest belongs to a different server — discarding');
+          localStorage.removeItem('respectManifest');
+          localStorage.removeItem('respectUrl');
+          return null;
+        }
         // Cache the resolved OPDS root separately — don't overwrite respectUrl
         localStorage.setItem('respectManifest', JSON.stringify(manifest));
 
@@ -332,7 +373,16 @@ const api = {
     return null;
   },
 
-  async login(username, password) {
+  /**
+   * Log in with username/password and persist the session (token, username,
+   * respectUrl). Optionally skip recording the server/username into the
+   * recent-logins history — used by automated RESPECT launches where the user
+   * never typed these credentials.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.record=true]  Record into recent logins.
+   */
+  async login(username, password, { record = true } = {}) {
     const url = `${this.getBaseUrl()}/login`;
     console.log('[API] POST login request to:', url);
     const response = await httpClient.post(
@@ -353,7 +403,9 @@ const api = {
     if (token) {
       localStorage.setItem('token', token);
       localStorage.setItem('username', username);
-      this.recordLogin(this.getBaseUrl(), username);
+      if (record) {
+        this.recordLogin(this.getBaseUrl(), username);
+      }
     }
 
     const respectUrlValue = (result.data && result.data.respectUrl) || result.respectUrl;
@@ -381,6 +433,43 @@ const api = {
     }
 
     return result;
+  },
+
+  /**
+   * Establish a real Tangerine session (JWT + respectUrl) from the HTTP Basic
+   * credentials supplied on a RESPECT deep link (`auth=Basic <base64>`). The
+   * Basic header itself is accepted by the OPDS feeds, but the app's own
+   * endpoints (e.g. `/groups`) require the JWT minted by `/login`, so we
+   * upgrade when possible. This does NOT record into the recent-logins history.
+   *
+   * @param {string} basicAuthHeader  e.g. "Basic dXNlcjE6cGFzc3dvcmQ="
+   * @returns {Promise<boolean>} true if a real session was established.
+   */
+  async loginFromBasicAuth(basicAuthHeader) {
+    if (!basicAuthHeader || !this.getBaseUrl()) return false;
+    const match = String(basicAuthHeader).match(/Basic\s+(.+)/i);
+    if (!match) return false;
+    let decoded;
+    try {
+      decoded = atob(match[1]);
+    } catch (e) {
+      return false;
+    }
+    const sep = decoded.indexOf(':');
+    if (sep <= 0) return false;
+    const username = decoded.slice(0, sep);
+    const password = decoded.slice(sep + 1);
+    try {
+      await this.login(username, password, { record: false });
+      console.log('[API] Upgraded RESPECT Basic credentials to a real session for', username);
+      return true;
+    } catch (e) {
+      // The RESPECT credentials may not be a /login-able Tangerine account.
+      // Keep the Basic fallback — the OPDS group/form feeds accept Basic, so
+      // listing still works.
+      console.warn('[API] RESPECT Basic creds are not a valid Tangerine login; keeping Basic fallback:', e.message);
+      return false;
+    }
   },
 
   async getGroups() {
