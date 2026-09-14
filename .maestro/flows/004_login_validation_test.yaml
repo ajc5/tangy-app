@@ -1,0 +1,24 @@
+# Credentials screen validates required fields before attempting a login.
+#
+# Requires: SERVER_URL, USERNAME.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_out.yaml"
+
+- runFlow: "../subflows/goto_login_step2.yaml"
+
+# Nothing entered -> rejected.
+- tapOn:
+    id: "login-btn"
+- assertVisible: "Please fill in all fields."
+- assertNotVisible: "Groups"
+
+# Username only -> still rejected (Enter submits the form from the field, which
+# avoids needing to tap the Login button under the soft keyboard).
+- tapOn:
+    id: "username"
+- inputText: ${USERNAME}
+- pressKey: Enter
+- assertVisible: "Please fill in all fields."
+- assertNotVisible: "Groups"

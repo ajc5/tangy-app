@@ -1,0 +1,22 @@
+# Log out through the burger menu.
+#
+# Assumes the app is signed in and showing a list screen (group or form list).
+# Leaves the app on the credentials step (the server URL is remembered).
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- tapOn: "Menu"
+- tapOn: "Logout"
+
+# The app's back-button handler can surface a confirmation; dismiss it if so.
+- runFlow:
+    when:
+      visible: "(?i)^ok$"
+    commands:
+      - tapOn: "(?i)^ok$"
+
+# Logout is asynchronous (history unwind + a delayed render), so wait until the
+# credentials screen is really on screen before returning.
+- extendedWaitUntil:
+    visible: "Server:"
+    timeout: 20000

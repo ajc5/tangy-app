@@ -1,0 +1,36 @@
+# Full login: login screen -> server URL -> credentials -> "Groups" home.
+#
+# Assumes the login step 1 screen is currently displayed.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "goto_login_step2.yaml"
+
+- tapOn:
+    id: "username"
+- inputText: ${USERNAME}
+
+# Focusing the username field opens the recent-usernames suggestion list, which
+# overlaps the password field. Tap the read-only server line to blur, then wait
+# for the list to close.
+- tapOn: "${SERVER_URL}"
+- extendedWaitUntil:
+    notVisible:
+      id: "username-suggest-list"
+    timeout: 5000
+
+- tapOn:
+    id: "password"
+- inputText: ${PASSWORD}
+
+# Submit with Enter (implicit form submission). Tapping the Login button is
+# unreliable because the soft keyboard covers it, and using Back to hide the
+# keyboard is intercepted by the app's `popstate` handler, which navigates back
+# to step 1.
+- pressKey: Enter
+
+- extendedWaitUntil:
+    visible: "Groups"
+    timeout: 30000

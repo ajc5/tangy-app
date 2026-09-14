@@ -1,0 +1,36 @@
+# Step 1 ("Enter your server URL") -> Step 2 (credentials).
+#
+# Assumes the login step 1 screen is currently displayed.
+#
+# Requires: SERVER_URL (no trailing slash — the app strips one when saving).
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+# Tap near the right edge so the caret lands at the END of the value. Tapping
+# the centre (the default) puts the caret mid-string when the field is
+# pre-filled, which makes eraseText delete only the part before it and inputText
+# splice the new URL into the middle.
+- tapOn:
+    id: "server-url"
+    point: "95%,50%"
+# The field is pre-filled with the remembered server URL (renderLoginStep1 sets
+# value from localStorage.serverUrl), so clear it before typing.
+- eraseText: 200
+- inputText: ${SERVER_URL}
+
+# Focusing the field opens the recent-servers suggestion list, which is
+# absolutely positioned and overlaps the Connect button. Blur the field by
+# tapping the heading and wait for the list to close before tapping Connect,
+# otherwise the tap lands on the demo-server suggestion and skips validation.
+- tapOn: "Enter your server URL"
+- extendedWaitUntil:
+    notVisible:
+      id: "server-suggest-list"
+    timeout: 5000
+- tapOn:
+    id: "connect-btn"
+
+- extendedWaitUntil:
+    visible:
+      id: "login-btn"
+    timeout: 15000

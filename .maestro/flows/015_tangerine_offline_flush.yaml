@@ -1,0 +1,15 @@
+# Tangerine cases 3 & 4, phase 4 (back ONLINE) — boot the form app so it flushes
+# the responses it queued while offline.
+#
+# The form player flushes its outbox on startup (`ngOnInit`) and on the browser
+# 'online' event. Because the overlay was closed after submitting, the app is no
+# longer running, so simply opening the form again is what triggers the flush.
+# The driver gives the upload a moment and then checks the server.
+#
+# Requires: GROUP_NAME, FORM_NAME. SERVER_URL/USERNAME/PASSWORD only if the
+# stored session was lost.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_in.yaml"
+- runFlow: "../subflows/open_form.yaml"

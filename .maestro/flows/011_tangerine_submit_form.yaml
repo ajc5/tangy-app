@@ -1,0 +1,44 @@
+# Tangerine case 2 — Submit a form.
+#
+# Opens a form, fills and submits it, then verifies the response actually
+# reached the server by counting responses in that server's own database.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_NAME, FORM_NAME, ANSWER,
+#           GROUP_DB, COUCH_USER, COUCH_PASSWORD
+# Optional: FORM_ID (narrows the count to one form)
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_out.yaml"
+- runFlow: "../subflows/login.yaml"
+- assertVisible: "Groups"
+
+# How many responses does the server hold before we submit?
+- runScript:
+    file: ../scripts/server-response-count.js
+    env:
+      SERVER_URL: ${SERVER_URL}
+      GROUP_DB: ${GROUP_DB}
+      COUCH_USER: ${COUCH_USER}
+      COUCH_PASSWORD: ${COUCH_PASSWORD}
+      FORM_ID: ${FORM_ID}
+- evalScript: ${output.before = output.forForm}
+
+- runFlow: "../subflows/open_form.yaml"
+- runFlow: "../subflows/fill_and_submit_form.yaml"
+
+# Submitting closes the overlay and reveals the form list it was opened from.
+- extendedWaitUntil:
+    visible: "${FORM_NAME}"
+    timeout: 30000
+
+# The server must now hold exactly one more response.
+- runScript:
+    file: ../scripts/server-response-count.js
+    env:
+      SERVER_URL: ${SERVER_URL}
+      GROUP_DB: ${GROUP_DB}
+      COUCH_USER: ${COUCH_USER}
+      COUCH_PASSWORD: ${COUCH_PASSWORD}
+      FORM_ID: ${FORM_ID}
+      EXPECTED: ${output.before + 1}

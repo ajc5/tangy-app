@@ -1,0 +1,20 @@
+# Successful login reaches the "Groups" home screen and the account menu shows
+# the signed-in user and available actions.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_out.yaml"
+
+- runFlow: "../subflows/login.yaml"
+
+# Home screen.
+- assertVisible: "Groups"
+
+# Account menu.
+- tapOn: "Menu"
+- assertVisible: "${USERNAME}"
+- assertVisible: "Copy RESPECT Link"
+- assertVisible: "Clear Login History"
+- assertVisible: "Logout"

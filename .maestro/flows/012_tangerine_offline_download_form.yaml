@@ -1,0 +1,41 @@
+# Tangerine case 3, phase 1 (ONLINE) — download a form for offline use.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_NAME, FORM_NAME, FORM_ID
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+# Start from wiped app data so the pin is a genuine Download -> Downloaded
+# transition (an already-cached form would just skip the download).
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Enter your server URL"
+    timeout: 30000
+- runFlow: "../subflows/login.yaml"
+- assertVisible: "Groups"
+
+- tapOn: "${GROUP_NAME}"
+- extendedWaitUntil:
+    visible: "${FORM_NAME}"
+    timeout: 30000
+
+# Pin the form: the row's badge goes Download -> Downloaded once every resource
+# is on disk. (Matched on the badge's accessible label, not its glyph.)
+- runFlow:
+    when:
+      visible:
+        id: "download-form-${FORM_ID}"
+        text: "Download"
+    commands:
+      - tapOn:
+          id: "download-form-${FORM_ID}"
+
+- extendedWaitUntil:
+    visible:
+      id: "download-form-${FORM_ID}"
+      text: "Downloaded"
+    timeout: 180000
+
+- assertVisible:
+    id: "download-form-${FORM_ID}"
+    text: "Downloaded"

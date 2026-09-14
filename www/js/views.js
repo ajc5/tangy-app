@@ -34,7 +34,15 @@ const views = {
   },
 
   _setDownloadBtnCached(buttonEl) {
-    buttonEl.textContent = '✓';
+    this._clearDownloadBusy(buttonEl);
+    buttonEl.removeAttribute('aria-busy');
+    // The visible check is an SVG-free text node, so the button needs an
+    // explicit accessible name (RESPECT labels this state "Downloaded").
+    // Maestro matches this label, which is stabler than matching a glyph.
+    buttonEl.setAttribute('aria-label', 'Downloaded');
+    // The check stays real text so it remains legible at small sizes; the
+    // tinted disc is presentational only.
+    buttonEl.innerHTML = '<span class="dl-cached">✓</span>';
     buttonEl.style.color = '#4caf50';
     buttonEl.style.borderColor = '';
     buttonEl.disabled = false;
@@ -42,14 +50,128 @@ const views = {
   },
 
   _setDownloadBtnUncached(buttonEl) {
-    buttonEl.textContent = '⬇';
+    this._clearDownloadBusy(buttonEl);
+    buttonEl.removeAttribute('aria-busy');
+    // RESPECT renders Icons.Default.FileDownload here (arrow onto a bar), not a
+    // bare down-arrow, so the two apps show the same affordance.
+    buttonEl.innerHTML = this._icon('download', 'download-icon');
+    buttonEl.setAttribute('aria-label', 'Download');
     buttonEl.style.color = '';
     buttonEl.style.borderColor = '';
     buttonEl.disabled = false;
     buttonEl.style.opacity = '1';
   },
 
-  // After the form list renders, flip a form's ⬇ to ✓ when the native cache
+  /**
+   * Drop the busy bookkeeping, so the next tap starts a fresh download instead
+   * of being read as a cancel of a job that has already finished.
+   */
+  _clearDownloadBusy(buttonEl) {
+    if (!buttonEl) return;
+    buttonEl._dlBusy = false;
+    buttonEl._dlSignal = null;
+  },
+
+  /**
+   * Busy state: a circular progress ring drawn over the download arrow,
+   * mirroring the RESPECT app's RespectOfflineItemStatusIcon. With no argument
+   * the ring spins (indeterminate, used while resources are still being
+   * discovered); pass `progress` (0..1) for a determinate arc.
+   *
+   * The button stays ENABLED on purpose: RESPECT labels this state "Cancel",
+   * so a tap aborts the job rather than being silently swallowed.
+   */
+  _setDownloadBtnBusy(buttonEl, progress) {
+    if (!buttonEl) return;
+    if (buttonEl._dlBusy) {
+      // Already rendering — just move the arc. Rebuilding innerHTML for each of
+      // a group's ~140 URLs would thrash layout in the list row.
+      this._updateDownloadRing(buttonEl, progress);
+      return;
+    }
+    buttonEl._dlBusy = true;
+    buttonEl.disabled = false;
+    buttonEl.style.opacity = '0.7';
+    buttonEl.innerHTML = this._downloadProgressMarkup(progress);
+    buttonEl.setAttribute('aria-label', 'Downloading, tap to cancel');
+    buttonEl.setAttribute('aria-busy', 'true');
+  },
+
+  _updateDownloadRing(buttonEl, progress) {
+    const ringEl = buttonEl.querySelector('.dl-progress-ring');
+    const svgEl = buttonEl.querySelector('.dl-progress-ring-svg');
+    if (!ringEl || !svgEl) return;
+    const { dash, gap, determinate } = this._downloadRingDash(progress);
+    ringEl.setAttribute('stroke-dasharray', dash);
+    ringEl.setAttribute('stroke-dashoffset', gap);
+    svgEl.classList.toggle('is-indeterminate', !determinate);
+  },
+
+  /** Shared arc geometry, so the first render and later updates agree. */
+  _downloadRingDash(progress) {
+    const circumference = 2 * Math.PI * 10.5;   // r=10.5 inside a 24x24 viewBox
+    const determinate = typeof progress === 'number' && isFinite(progress);
+    if (!determinate) {
+      // A short arc chasing itself around the ring.
+      return {
+        dash: (circumference * 0.28).toFixed(2),
+        gap: circumference.toFixed(2),
+        determinate: false,
+      };
+    }
+    const clamped = Math.min(Math.max(progress, 0), 1);
+    return {
+      dash: circumference.toFixed(2),
+      gap: (circumference * (1 - clamped)).toFixed(2),
+      determinate: true,
+    };
+  },
+
+  _downloadProgressMarkup(progress) {
+    const { dash, gap, determinate } = this._downloadRingDash(progress);
+    return '<span class="dl-progress">' +
+      '<svg class="dl-progress-ring-svg' + (determinate ? '' : ' is-indeterminate') + '" viewBox="0 0 24 24" aria-hidden="true">' +
+        '<circle class="dl-progress-ring" cx="12" cy="12" r="10.5" ' +
+          'stroke-dasharray="' + dash + '" stroke-dashoffset="' + gap + '"/>' +
+      '</svg>' +
+      '<svg class="dl-progress-arrow" viewBox="0 0 24 24" aria-hidden="true">' +
+        '<path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>' +
+      '</svg>' +
+    '</span>';
+  },
+
+  /**
+   * Single entry point for a download button tap: start a job, or cancel the
+   * one already running on that button. Keeps one listener per element, so a
+   * cancel can never also kick off a new download.
+   */
+  _onDownloadBtnClick(buttonEl, startFn) {
+    if (buttonEl._dlBusy) {
+      this._cancelDownload(buttonEl);
+      return;
+    }
+    startFn();
+  },
+
+  /**
+   * Abort the in-flight job for this button. Cooperative: the running loop
+   * checks `signal.cancelled` between requests (see CacheService). Whatever
+   * already landed on disk stays there — it is only a cache — but nothing is
+   * marked as pinned, so the next tap re-runs the job cleanly.
+   */
+  _cancelDownload(buttonEl) {
+    const signal = buttonEl._dlSignal;
+    if (!signal || signal.cancelled) return;
+    signal.cancelled = true;
+    console.log('[VIEWS] Download cancelled by user');
+    buttonEl.disabled = true;                 // one cancel per job
+    buttonEl.setAttribute('aria-label', 'Cancelling download');
+    buttonEl.setAttribute('aria-busy', 'true');
+    // Keep the ring moving until the in-flight request settles.
+    buttonEl.innerHTML = this._downloadProgressMarkup();
+  },
+
+  // After the form list renders, flip a form's download icon to ✓ when the native cache
   // actually holds the form's shell URL. This makes the badge reflect content
   // that was ADOPTED from the RESPECT launcher's cache (either served during a
   // RESPECT-launched session or during an offline direct open), not only items
@@ -67,6 +189,9 @@ const views = {
           existing.push(baseUrl);
           this._savePinnedUrls(formKey, existing);
         }
+        // This probe is async, so a download the user started in the meantime
+        // may already own the button — never stomp its spinner or its cancel.
+        if (buttonEl._dlBusy) return;
         this._setDownloadBtnCached(buttonEl);
         console.log('[VIEWS] Auto-marked form cached (found on disk):', formUrl);
       }
@@ -130,6 +255,31 @@ const views = {
   },
 
   /**
+   * Material Symbols paths (24x24 viewBox) for the header chrome — the same
+   * glyphs the RESPECT app draws through Compose (Icons.AutoMirrored.Filled
+   * .ArrowBack, Icons.Default.Menu, Icons.Filled.Close). Using the standard set
+   * keeps the two apps' headers visually identical; the text glyphs they
+   * replaced (← ☰) had inconsistent stroke weight and baseline.
+   */
+  _ICON_PATHS: {
+    back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z',
+    close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+    menu: 'M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z',
+    // Material `file_download` (arrow onto a bar) - the glyph RESPECT shows for
+    // a publication that is not pinned yet (Icons.Default.FileDownload). The
+    // text glyph it replaced (⬇) was a thin down-arrow with no bar.
+    download: 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z',
+  },
+
+  /** Inline SVG for an icon; colour comes from `fill: currentColor`. */
+  _icon(name, className = 'menu-icon') {
+    const path = this._ICON_PATHS[name];
+    if (!path) return '';
+    return '<svg class="' + className + '" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path d="' + path + '"/></svg>';
+  },
+
+  /**
    * Shared header bar used on both logged-in and login screens.
    *
    * @param {Object}   [options]
@@ -156,7 +306,9 @@ const views = {
       // Back button (only enabled if there's history)
       const backBtn = document.createElement('button');
       backBtn.className = 'menu-btn menu-back';
-      backBtn.textContent = '←';
+      backBtn.innerHTML = this._icon('back');
+      // The glyph is an SVG now, so its accessible name has to be explicit.
+      backBtn.setAttribute('aria-label', 'Back');
       backBtn.disabled = this._history.length === 0;
       backBtn.style.opacity = this._history.length === 0 ? '0.5' : '1';
       backBtn.addEventListener('click', () => this.goBack());
@@ -187,7 +339,7 @@ const views = {
 
     const menuToggle = document.createElement('button');
     menuToggle.className = 'menu-btn menu-hamburger';
-    menuToggle.textContent = '☰';
+    menuToggle.innerHTML = this._icon('menu');
     menuToggle.setAttribute('aria-label', 'Menu');
     actions.appendChild(menuToggle);
 
@@ -299,6 +451,11 @@ const views = {
   },
 
   logout() {
+    // The history unwind below fires popstate while the group list is still in
+    // the DOM. Without this guard the popstate handler treats it as a hardware
+    // back press on the groups page and asks the user to confirm the logout
+    // they just chose.
+    this._suppressBackLogoutPrompt = true;
     this._history = [];
     this._currentGroupId = null;
     this._currentGroupName = null;
@@ -316,6 +473,10 @@ const views = {
           this.renderLoginStep1();
         }
       }, 50);
+      // Keep the guard up until the programmatic unwind has settled.
+      setTimeout(() => {
+        this._suppressBackLogoutPrompt = false;
+      }, 250);
       return;
     }
     if (serverUrl) {
@@ -323,6 +484,7 @@ const views = {
     } else {
       this.renderLoginStep1();
     }
+    this._suppressBackLogoutPrompt = false;
   },
 
   /**
@@ -534,15 +696,16 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
+        dlBtn.id = 'download-group-' + groupId;
         dlBtn.title = 'Pin all forms in this group for offline use';
         if (this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
-          dlBtn.textContent = '⬇';
+          this._setDownloadBtnUncached(dlBtn);
         }
         dlBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.cacheGroupResources(groupId, dlBtn);
+          this._onDownloadBtnClick(dlBtn, () => this.cacheGroupResources(groupId, dlBtn));
         });
         li.appendChild(dlBtn);
 
@@ -599,18 +762,19 @@ const views = {
 
         const dlBtn = document.createElement('button');
         dlBtn.className = 'download-btn';
+        dlBtn.id = 'download-form-' + formId;
         dlBtn.title = 'Pin this form for offline use';
         if (this._isCached('form:' + formUrl) || this._isCached('group:' + groupId)) {
           this._setDownloadBtnCached(dlBtn);
         } else {
-          dlBtn.textContent = '⬇';
+          this._setDownloadBtnUncached(dlBtn);
         }
         dlBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          this.cacheFormResources(formUrl, dlBtn);
+          this._onDownloadBtnClick(dlBtn, () => this.cacheFormResources(formUrl, dlBtn));
         });
         li.appendChild(dlBtn);
-        // Flip ⬇ to ✓ if this form's shell is already on the native cache (e.g.
+        // Flip the download icon to ✓ if this form's shell is already on the native cache (e.g.
         // adopted from RESPECT). Fire-and-forget; resolves after a native probe.
         this._reconcileFormBadge(dlBtn, formUrl, groupId);
 
@@ -725,9 +889,7 @@ const views = {
     // Toggle — already cached: uncache it.
     if (this._isCached(cacheKey)) {
       console.log('[VIEWS] Uncaching form:', formUrl);
-      buttonEl.textContent = '⏳';
-      buttonEl.disabled = true;
-      buttonEl.style.opacity = '0.7';
+      this._setDownloadBtnBusy(buttonEl);
       try {
         await this._evictUrls(this._getPinnedUrls(cacheKey));
         this._unmarkCached(cacheKey);
@@ -741,19 +903,28 @@ const views = {
       return;
     }
 
-    buttonEl.textContent = '⏳';
-    buttonEl.disabled = true;
-    buttonEl.style.opacity = '0.7';
+    // Spins while resources are discovered, then tracks cached/total. The
+    // signal lets a tap on the button abort the whole job.
+    const signal = { cancelled: false };
+    buttonEl._dlSignal = signal;
+    this._setDownloadBtnBusy(buttonEl);
 
     try {
       const baseUrl = formUrl.replace(/#.*$/, '');
       const urlsToCache = await this._discoverAllFormResourceUrls(formUrl, baseUrl);
       console.log('[VIEWS] Pinning form resources via TangyCache:', urlsToCache.length, 'URLs');
       const result = await cacheService.downloadAndRetain(
-        urlsToCache.map(url => ({ url, remark: 'form-cache' }))
+        urlsToCache.map(url => ({ url, remark: 'form-cache' })),
+        (done, total) => this._setDownloadBtnBusy(buttonEl, total ? done / total : 0),
+        signal
       );
       console.log('[VIEWS] Pin result:', result.cached, 'cached,', result.failed, 'failed');
 
+      if (result.cancelled) {
+        console.log('[VIEWS] Form pin cancelled; nothing marked as cached.');
+        this._setDownloadBtnUncached(buttonEl);
+        return;
+      }
       // Only mark the form cached when content actually landed on disk.
       // A false tick on failure (e.g. offline) would ALSO make the next
       // connected tap UNCACHE instead of cache (this button is a toggle).
@@ -784,9 +955,9 @@ const views = {
     // Toggle — already cached: uncache the group and its child forms.
     if (this._isCached(cacheKey)) {
       console.log('[VIEWS] Uncaching group:', groupId);
-      buttonEl.textContent = '⏳';
-      buttonEl.disabled = true;
-      buttonEl.style.opacity = '0.7';
+      // Eviction is a single native call, so there is no signal to cancel with;
+      // _cancelDownload no-ops and taps are ignored while _dlBusy is set.
+      this._setDownloadBtnBusy(buttonEl);
       try {
         // Evict every URL pinned for the group or any of its child forms.
         const urlsToEvict = [...this._getPinnedUrls(cacheKey)];
@@ -812,9 +983,11 @@ const views = {
       return;
     }
 
-    buttonEl.textContent = '⏳';
-    buttonEl.disabled = true;
-    buttonEl.style.opacity = '0.7';
+    // Spins while each form's resources are discovered (the slow phase for a
+    // group), then tracks cached/total across the whole flattened URL set.
+    const signal = { cancelled: false };
+    buttonEl._dlSignal = signal;
+    this._setDownloadBtnBusy(buttonEl);
 
     try {
       const forms = await api.getFormsForGroup(groupId);
@@ -823,6 +996,11 @@ const views = {
       const allUrls = [];
       const childFormKeys = [];
       for (const form of forms) {
+        if (signal.cancelled) {
+          console.log('[VIEWS] Group pin cancelled during discovery.');
+          this._setDownloadBtnUncached(buttonEl);
+          return;
+        }
         const formId = form.id;
         const formUrl = form._openAccessUrl
           ? (form._openAccessUrl.startsWith('http')
@@ -830,52 +1008,59 @@ const views = {
               : `${api.getBaseUrl()}${form._openAccessUrl}`)
           : `${api.getBaseUrl()}/releases/prod/online-survey-apps/${groupId}/${formId}/#/form/${formId}`;
         const baseUrl = formUrl.replace(/#.*$/, '');
-        allUrls.push(baseUrl);
 
-        // Discover sub-resources
+        // Use the SAME discovery that cacheFormResources uses. Crawling the
+        // release shell alone is NOT enough: the form player fetches its own
+        // assets/form/form.html, app-config.json, translations.json, icon fonts
+        // etc. at runtime, so a group pinned that way cannot actually be opened
+        // offline. _discoverAllFormResourceUrls prefers the server's OPDS
+        // publication detail, which lists the full resource set (~141 URLs for a
+        // typical form), and always includes baseUrl itself.
         try {
-          const response = await httpClient.get(baseUrl, {
-            'Authorization': localStorage.getItem('token')
-          });
-          if (response.ok) {
-            const text = await response.text();
-            const ct = response.headers.get('content-type') || '';
-            if (ct.includes('/json') || ct.includes('opds') || text.trim().startsWith('{')) {
-              const resourceUrls = this._extractReadiumResources(text, baseUrl);
-              allUrls.push(...resourceUrls);
-            } else {
-              const resourceUrls = this._extractResourceUrls(text, baseUrl);
-              allUrls.push(...resourceUrls);
-            }
-          }
+          const resourceUrls = await this._discoverAllFormResourceUrls(formUrl, baseUrl);
+          allUrls.push(...resourceUrls);
+          console.log(`[VIEWS] Discovered ${resourceUrls.length} resources for form ${formId}`);
         } catch (e) {
-          console.warn(`[VIEWS] Could not fetch form ${formId} for resource discovery:`, e);
+          console.warn(`[VIEWS] Resource discovery failed for form ${formId}; pinning the shell only:`, e);
+          allUrls.push(baseUrl);
         }
 
-        this._markCached('form:' + formUrl);
+        // Only recorded here; the key is MARKED cached further down, once the
+        // download has actually succeeded. Marking it here would leave every
+        // form row showing a cached badge for a group job that was cancelled
+        // or that failed halfway.
         childFormKeys.push('form:' + formUrl);
       }
 
       const uniqueUrls = [...new Set(allUrls)];
       console.log('[VIEWS] Pinning group resources via Respect:', uniqueUrls.length, 'URLs');
       const result = await cacheService.downloadAndRetain(
-        uniqueUrls.map(url => ({ url, remark: 'group-cache' }))
+        uniqueUrls.map(url => ({ url, remark: 'group-cache' })),
+        (done, total) => this._setDownloadBtnBusy(buttonEl, total ? done / total : 0),
+        signal
       );
       console.log('[VIEWS] Pin result:', result.cached, 'cached,', result.failed, 'failed');
 
+      if (result.cancelled) {
+        console.log('[VIEWS] Group pin cancelled; nothing marked as cached.');
+        this._setDownloadBtnUncached(buttonEl);
+        return;
+      }
+
+      childFormKeys.forEach(k => this._markCached(k));
       this._markCached(cacheKey);
       this._savePinnedUrls(cacheKey, result.urls);
       this._saveGroupFormKeys(groupId, childFormKeys);
       this._setDownloadBtnCached(buttonEl);
     } catch (err) {
       console.error('[VIEWS] Failed to pin group:', err);
+      this._clearDownloadBusy(buttonEl);
       buttonEl.textContent = '✗';
       buttonEl.style.color = '#ff0000';
+      buttonEl.setAttribute('aria-label', 'Download failed');
+      buttonEl.removeAttribute('aria-busy');
       setTimeout(() => {
-        buttonEl.textContent = '⬇';
-        buttonEl.style.color = '';
-        buttonEl.disabled = false;
-        buttonEl.style.opacity = '1';
+        this._setDownloadBtnUncached(buttonEl);
       }, 2000);
     }
   },
@@ -996,7 +1181,7 @@ const views = {
       console.log('[VIEWS] popstate, state:', e.state, 'history:', this._history.length);
       if (this._history.length > 0) {
         this.goBack();
-      } else if (document.getElementById('group-list')) {
+      } else if (!this._suppressBackLogoutPrompt && document.getElementById('group-list')) {
         // On groups page — confirm logout
         if (confirm('Log out and return to the login screen?')) {
           this.logout();

@@ -15,6 +15,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.LinearLayout
+import android.widget.ImageView
 import android.widget.TextView
 
 import android.Manifest
@@ -37,6 +38,8 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -572,6 +575,9 @@ class TangyCachePlugin : Plugin() {
             view?.evaluateJavascript(PERMISSION_HELP_SCRIPT, null)
             view?.evaluateJavascript(XAPI_RELAY_SCRIPT, null)
             view?.evaluateJavascript(XHR_QUEUE_SCRIPT, null)
+            // Auto-close after submission (returns to the Tangerine form list for
+            // forms opened from it; RESPECT-launched lessons are handled natively).
+            view?.evaluateJavascript(FORM_SUBMIT_WATCH_SCRIPT, null)
         }
 
         override fun shouldInterceptRequest(
@@ -1095,12 +1101,13 @@ class TangyCachePlugin : Plugin() {
                             LinearLayout.LayoutParams.WRAP_CONTENT
                         )
                     }
-                    // Back button (left end)
-                    val backBtn = TextView(activity).apply {
-                        text = "\u2190"
-                        setTextColor(Color.WHITE)
-                        textSize = 20f
-                        setPadding(12, 8, 12, 8)
+                    // Back button (left end). Material arrow_back vector, the same
+                    // glyph RESPECT renders via Icons.AutoMirrored.Filled.ArrowBack
+                    // (the old text glyph "←" had no consistent stroke weight).
+                    val backBtn = ImageView(activity).apply {
+                        setImageResource(R.drawable.ic_arrow_back)
+                        contentDescription = "Back"
+                        setPadding(16, 16, 16, 16)
                         setOnClickListener {
                             closeCachedWebView(rootLayout)
                         }
@@ -1113,17 +1120,37 @@ class TangyCachePlugin : Plugin() {
                         )
                     }
                     toolbar.addView(spacer)
-                    // Close button (right end)
-                    val closeBtn = TextView(activity).apply {
-                        text = "X"
-                        setTextColor(Color.WHITE)
-                        textSize = 18f
-                        setPadding(12, 8, 12, 8)
+                    // Close button (right end). Material close vector, matching
+                    // RESPECT's Icons.Filled.Close.
+                    val closeBtn = ImageView(activity).apply {
+                        setImageResource(R.drawable.ic_close)
+                        contentDescription = closeButtonText
+                        setPadding(16, 16, 16, 16)
                         setOnClickListener {
                             closeCachedWebView(rootLayout)
                         }
                     }
                     toolbar.addView(closeBtn)
+
+                    // Android 15+ (targetSdk 35+) draws the app edge-to-edge, so this
+                    // overlay would otherwise start underneath the status bar. Keep the
+                    // toolbar's background spanning the inset while shifting its buttons
+                    // down so they stay visible and tappable.
+                    val baseToolbarPadding = intArrayOf(
+                        toolbar.paddingLeft, toolbar.paddingTop,
+                        toolbar.paddingRight, toolbar.paddingBottom
+                    )
+                    ViewCompat.setOnApplyWindowInsetsListener(toolbar) { view, insets ->
+                        val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+                        view.setPadding(
+                            baseToolbarPadding[0],
+                            baseToolbarPadding[1] + bars.top,
+                            baseToolbarPadding[2],
+                            baseToolbarPadding[3]
+                        )
+                        insets
+                    }
+
                     rootLayout.addView(toolbar)
                 }
 
@@ -1149,6 +1176,22 @@ class TangyCachePlugin : Plugin() {
                         "TangyCacheBridge"
                     )
                 }
+                // Keep the form's own bottom controls clear of the navigation bar.
+                val baseWebViewPadding = intArrayOf(
+                    webView.paddingLeft, webView.paddingTop,
+                    webView.paddingRight, webView.paddingBottom
+                )
+                ViewCompat.setOnApplyWindowInsetsListener(webView) { view, insets ->
+                    val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+                    view.setPadding(
+                        baseWebViewPadding[0],
+                        baseWebViewPadding[1],
+                        baseWebViewPadding[2],
+                        baseWebViewPadding[3] + bars.bottom
+                    )
+                    insets
+                }
+
                 rootLayout.addView(webView)
                 activity.addContentView(
                     rootLayout,
@@ -1157,6 +1200,9 @@ class TangyCachePlugin : Plugin() {
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                 )
+                // Insets are dispatched on the next layout pass; nudge them along so
+                // the overlay is positioned correctly the first time it is shown.
+                rootLayout.post { ViewCompat.requestApplyInsets(rootLayout) }
 
                 // Track the overlay so closing / backing out of it knows where to
                 // land: RESPECT-launched lessons return to the launcher that opened
@@ -1811,6 +1857,26 @@ class TangyCachePlugin : Plugin() {
                 this@TangyCachePlugin.finishAndReturnToLauncher(ipcPackage)
             }
         }
+
+        /**
+         * Called by the injected form-submit watcher (FORM_SUBMIT_WATCH_SCRIPT) once a
+         * form run in this WebView reaches the player's "form submitted" success
+         * state. Forms opened from the Tangerine group/form list close and reveal
+         * that list again. RESPECT-launched lessons are ignored here: their hand-back
+         * to the launcher is driven by the xAPI IPC relay callback (above), so
+         * closing here as well would return twice.
+         */
+        @android.webkit.JavascriptInterface
+        fun formSubmitted() {
+            val root = currentWebViewRoot ?: return
+            if (currentRespectLaunch) return
+            Log.i(TAG, "Form submitted - closing cached WebView back to the form list")
+            activity?.runOnUiThread {
+                // Guard against a newer overlay having replaced this one in the
+                // meantime (reopened form while the close was posting).
+                if (currentWebViewRoot === root) closeCachedWebView(root)
+            }
+        }
     }
 
     companion object {
@@ -1914,6 +1980,89 @@ class TangyCachePlugin : Plugin() {
                     if (++attempts > 200) return; // ~20s cap
                     setTimeout(tryInstall, 100);
                 })();
+            })();
+        """
+
+        /**
+         * JavaScript injected into every cached WebView page. Watches for the
+         * online-survey-app form player's "form submitted" state and asks the native
+         * side to close the overlay - so a form opened from the Tangerine group/form
+         * list returns to that list, mirroring the RESPECT-launched hand-back.
+         *
+         * The player uploads the completed response and delivers its xAPI statements
+         * BEFORE routing to its 'form-submitted-success' Angular route, so that route
+         * is the "submission finished" signal (closing earlier would drop what is
+         * still in flight). The route is hash-based: Angular's HashLocationStrategy
+         * navigates with history.pushState/replaceState, which fires neither
+         * hashchange nor popstate - hence the history hooks. hashchange/popstate and
+         * a short poll started by the form's 'after-submit' event are safety nets for
+         * other player builds.
+         */
+        private const val FORM_SUBMIT_WATCH_SCRIPT = """
+            (function() {
+                if (window.__tangyFormSubmitWatchInjected) return;
+                window.__tangyFormSubmitWatchInjected = true;
+
+                var hasBridge = false;
+                try { hasBridge = !!(window.TangyCacheBridge && TangyCacheBridge.formSubmitted); } catch (e) {}
+                if (!hasBridge) return;
+
+                var SUCCESS_MARKER = 'form-submitted-success';
+                var notified = false;
+                var pollTimer = null;
+
+                function notify() {
+                    if (notified) return;
+                    notified = true;
+                    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                    console.log('[TangyCache] Form submitted - closing back to the form list');
+                    try { TangyCacheBridge.formSubmitted(); } catch (e) {}
+                }
+
+                function check() {
+                    if (notified) return;
+                    var href = '';
+                    try { href = window.location.href || ''; } catch (e) {}
+                    if (href.indexOf(SUCCESS_MARKER) !== -1) notify();
+                }
+
+                // Angular's HashLocationStrategy changes the URL via
+                // history.pushState/replaceState, which does not fire hashchange.
+                try {
+                    var wrap = function(name) {
+                        var orig = window.history[name];
+                        if (typeof orig !== 'function') return;
+                        window.history[name] = function() {
+                            var result = orig.apply(this, arguments);
+                            try { check(); } catch (e) {}
+                            return result;
+                        };
+                    };
+                    wrap('pushState');
+                    wrap('replaceState');
+                } catch (e) {}
+
+                try { window.addEventListener('hashchange', check); } catch (e) {}
+                try { window.addEventListener('popstate', check); } catch (e) {}
+
+                // The player dispatches 'after-submit' on <tangy-form>. It does not
+                // bubble, but a capture-phase listener on document still sees it. It
+                // fires before the upload/xAPI work completes, so poll for the success
+                // route rather than closing immediately.
+                function startPolling() {
+                    if (pollTimer || notified) return;
+                    var tries = 0;
+                    pollTimer = setInterval(function() {
+                        check();
+                        if (notified || ++tries > 480) {
+                            clearInterval(pollTimer);
+                            pollTimer = null;
+                        }
+                    }, 250);
+                }
+                try { document.addEventListener('after-submit', startPolling, true); } catch (e) {}
+
+                check();
             })();
         """
 

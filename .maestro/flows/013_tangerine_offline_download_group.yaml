@@ -1,0 +1,35 @@
+# Tangerine case 4, phase 1 (ONLINE) — download a whole group for offline use.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_ID
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+# Start from wiped app data so the pin is a genuine Download -> Downloaded
+# transition (an already-cached group would just skip the download).
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Enter your server URL"
+    timeout: 30000
+- runFlow: "../subflows/login.yaml"
+- assertVisible: "Groups"
+
+# Pin the group (and every form in it): badge Download -> Downloaded.
+- runFlow:
+    when:
+      visible:
+        id: "download-group-${GROUP_ID}"
+        text: "Download"
+    commands:
+      - tapOn:
+          id: "download-group-${GROUP_ID}"
+
+- extendedWaitUntil:
+    visible:
+      id: "download-group-${GROUP_ID}"
+      text: "Downloaded"
+    timeout: 300000
+
+- assertVisible:
+    id: "download-group-${GROUP_ID}"
+    text: "Downloaded"

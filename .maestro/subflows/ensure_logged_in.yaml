@@ -1,0 +1,38 @@
+# Ensure the app is running and signed in, WITHOUT wiping any state.
+#
+# Used by the offline cases: they must keep the downloaded cache and the stored
+# session, so `ensure_logged_out.yaml` (which logs out) is the wrong tool here.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD (only if the session was lost).
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+# Fresh process, so no stale form overlay is covering the shell.
+- stopApp
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Menu"
+    timeout: 30000
+
+# Normally the stored session takes us straight to the group list. If the login
+# screen is showing instead, the session is gone and we must sign in again.
+- runFlow:
+    when:
+      visible:
+        id: "login-step1"
+    commands:
+      - runFlow: "login.yaml"
+
+- runFlow:
+    when:
+      visible:
+        id: "login-step2"
+    commands:
+      - tapOn:
+          id: "change-server-btn"
+      - runFlow: "login.yaml"
+
+- extendedWaitUntil:
+    visible: "Groups"
+    timeout: 45000

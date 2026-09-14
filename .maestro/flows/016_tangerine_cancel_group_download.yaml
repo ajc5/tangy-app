@@ -1,0 +1,54 @@
+# Tangerine — cancelling a running group download.
+#
+# The busy state is tappable on purpose: the RESPECT app labels its equivalent
+# state "Cancel" (RespectOfflineItemStatusIcon + RespectQuickActionButton), so a
+# second tap on a spinning badge must abort the job rather than be ignored.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_ID
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_in.yaml"
+
+# Order-independent: Maestro runs flows in arbitrary order, so un-pin the group
+# if an earlier flow (013) left it cached.
+- runFlow:
+    when:
+      visible:
+        id: "download-group-${GROUP_ID}"
+        text: "Downloaded"
+    commands:
+      - tapOn:
+          id: "download-group-${GROUP_ID}"
+      - extendedWaitUntil:
+          visible:
+            id: "download-group-${GROUP_ID}"
+            text: "Download"
+          timeout: 120000
+
+- assertVisible:
+    id: "download-group-${GROUP_ID}"
+    text: "Download"
+
+# Start the pin. The badge goes busy synchronously on this tap.
+- tapOn:
+    id: "download-group-${GROUP_ID}"
+
+# Capture the busy state (this screencap also lets the job make progress).
+- takeScreenshot: cancel-busy
+
+# A second tap on the same button must CANCEL, not queue another download.
+- tapOn:
+    id: "download-group-${GROUP_ID}"
+
+# A cancelled job marks nothing as cached, so the badge returns to the download
+# icon and never reaches the "Downloaded" state.
+- extendedWaitUntil:
+    visible:
+      id: "download-group-${GROUP_ID}"
+      text: "Download"
+    timeout: 60000
+
+- assertNotVisible:
+    id: "download-group-${GROUP_ID}"
+    text: "Downloaded"

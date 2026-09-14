@@ -1,0 +1,34 @@
+# Server URL step rejects an empty or whitespace-only URL and stays on step 1.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible: "Enter your server URL"
+    timeout: 30000
+
+# Empty -> rejected.
+- tapOn:
+    id: "connect-btn"
+- assertVisible: "Please enter a server URL."
+- assertNotVisible: "Server:"
+
+# Whitespace-only -> trimmed to empty, so also rejected.
+- tapOn:
+    id: "server-url"
+- inputText: "   "
+- tapOn: "Enter your server URL"
+- extendedWaitUntil:
+    notVisible:
+      id: "server-suggest-list"
+    timeout: 5000
+- tapOn:
+    id: "connect-btn"
+- assertVisible: "Please enter a server URL."
+
+# Still on step 1 — no credentials screen was reached.
+- assertNotVisible: "Server:"
+- assertNotVisible:
+    id: "login-btn"

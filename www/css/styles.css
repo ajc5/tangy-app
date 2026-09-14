@@ -53,7 +53,12 @@ html, body {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  /* Fallback for WebViews without env() support. */
   padding: 70px 20px 20px;
+  /* 70px clears the fixed header; add the safe-area insets that the status bar
+     and the navigation bar now occupy. */
+  padding: calc(70px + env(safe-area-inset-top, 0px)) 20px
+    calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
 /* Groups and forms lists — top-aligned, not vertically centered */
@@ -241,6 +246,90 @@ li:active {
   background: transparent;
 }
 
+/* Uncached state: Material `file_download` (arrow onto a bar), the same glyph
+   the RESPECT app shows for an unpinned publication. */
+.download-icon {
+  width: 24px;
+  height: 24px;
+  display: block;
+  fill: currentColor;
+  pointer-events: none;
+}
+
+/* ---- Cached state: RESPECT-style "pinned" badge ----
+   The RESPECT app pairs its download icon with a filled indicator once a
+   publication is READY (Icons.Default.OfflinePin). We do the same but keep
+   the check as real text rather than an SVG, so the glyph stays in the
+   accessibility tree and existing assertions on text "✓" keep matching.
+   Filled = settled, outline ring = still working. */
+.dl-cached {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(76, 175, 80, 0.16);
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* ---- Busy state: circular progress ring over the download arrow ----
+   Mirrors the RESPECT app's RespectOfflineItemStatusIcon (Compose):
+   a FileDownload icon with a CircularProgressIndicator drawn over it.
+   Indeterminate (spinning arc) while resources are being discovered,
+   determinate (arc tracks cached/total) while URLs are downloading. */
+.dl-progress {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
+.dl-progress > svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* The ring is rotated so a determinate arc starts at 12 o'clock and
+   sweeps clockwise, like Material's CircularProgressIndicator. */
+.dl-progress-ring-svg {
+  transform: rotate(-90deg);
+}
+
+.dl-progress-ring-svg.is-indeterminate {
+  animation: dl-progress-spin 0.9s linear infinite;
+}
+
+@keyframes dl-progress-spin {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+
+.dl-progress-ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Keep the arrow readable underneath the ring without competing with it. */
+.dl-progress-arrow {
+  fill: currentColor;
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dl-progress-ring-svg.is-indeterminate {
+    animation: none;
+  }
+}
+
 /* ---- Server Info ---- */
 .server-info {
   display: flex;
@@ -302,8 +391,15 @@ li:active {
   align-items: center;
   background: var(--tangy-primary-color-dark);
   color: var(--tangy-primary-text-color-overlay);
+  /* Base values first: a WebView without env() support (Chrome < 69) drops the
+     declarations below and keeps these, so the bar still lays out correctly. */
   padding: 0 16px;
   height: 56px;
+  /* Android 15+ (targetSdk 35+) draws the app edge-to-edge, so this fixed bar
+     starts at window y=0 - underneath the status bar. Let the bar's background
+     span the status-bar inset, but push its contents below it. */
+  padding: env(safe-area-inset-top, 0px) 16px 0;
+  height: calc(56px + env(safe-area-inset-top, 0px));
   z-index: 1000;
   box-shadow: var(--tangy-elevation-2);
 }
@@ -389,9 +485,6 @@ li:active {
 
 /* ---- Hamburger Menu ---- */
 .menu-hamburger {
-  font-size: 20px;
-  line-height: 1;
-  padding: 8px 12px;
   color: var(--tangy-primary-text-color-overlay);
   cursor: pointer;
 }
@@ -400,10 +493,28 @@ li:active {
   background: rgba(255, 255, 255, 0.12);
 }
 
-.menu-back {
-  font-size: 22px !important;
-  padding: 6px 14px !important;
-  line-height: 1 !important;
+/* The back arrow and hamburger are icon-only Material glyphs now, so size them
+   as a 40px touch target with the SVG centred instead of sizing a text glyph.
+   font-size/line-height are zeroed so no glyph metrics leak into the layout. */
+.menu-back,
+.menu-hamburger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  font-size: 0;
+  line-height: 0;
+}
+
+/* Material Symbols paths (24x24 viewBox) inheriting the header's white. */
+.menu-icon {
+  width: 24px;
+  height: 24px;
+  display: block;
+  fill: currentColor;
+  pointer-events: none;
 }
 
 /* ---- Dropdown Menu (paper-menu style) ---- */

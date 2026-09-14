@@ -4,6 +4,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.room.Room
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.getcapacitor.BridgeActivity
 import com.tangy.cache.TangyCachePlugin
 import com.ustadmobile.libcache.CachePaths
@@ -31,6 +33,18 @@ class MainActivity : BridgeActivity() {
         // Register local TangyCache plugin (not auto-discovered by Capacitor)
         initialPlugins.add(TangyCachePlugin::class.java)
         super.onCreate(savedInstanceState)
+
+        // The shell header is always dark navy (#212a3f) and, on Android 15+
+        // (targetSdk 35+), the app draws edge-to-edge so that header sits behind
+        // the status bar. The clock and battery must therefore be white: with the
+        // default light-status-bar appearance they render near-black
+        // (measured #0d1119) on navy, i.e. invisible.
+        //
+        // This has to run AFTER super.onCreate(): the activity theme's
+        // light-status-bar appearance is applied during activity creation and
+        // beats the values/styles.xml declaration, so a runtime override is the
+        // only reliable place.
+        applyStatusBarIconAppearance()
 
         // 1. Build the Room database for cache metadata
         val cacheDb = Room.databaseBuilder(
@@ -80,6 +94,33 @@ class MainActivity : BridgeActivity() {
 
         // 4. Start the local RESPECT cache proxy on port 4242
         startRespectProxy()
+    }
+
+    /**
+     * Force white status-bar icons to match the always-dark shell header.
+     *
+     * NOTE: at onCreate/onResume the window usually has no real insets
+     * controller yet - it reports `PendingInsetsController` with
+     * `decorAttached=false`, so the flag is accepted but never reaches the
+     * display (verified in logcat). The value therefore has to be (re)asserted
+     * once the decor view is genuinely attached, which is why onResume posts it
+     * and also hooks the inset dispatch.
+     */
+    private fun applyStatusBarIconAppearance() {
+        WindowInsetsControllerCompat(window, window.decorView)
+            .isAppearanceLightStatusBars = false
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Runs after attach, so the controller is real rather than pending.
+        window.decorView.post { applyStatusBarIconAppearance() }
+        // Belt and braces: re-assert on every inset dispatch (rotation, system
+        // bar changes, returning to the app).
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+            applyStatusBarIconAppearance()
+            insets
+        }
     }
 
     private fun startRespectProxy() {

@@ -1,0 +1,11 @@
+RESPECT test cases - https://github.com/UstadMobile/Respect/wiki/Compatible-app-review-procedure-for-inclusion-in-default-catalog
+1. Login - Login to the Respect server and add the Tangerine app (copy RESPECT manifest link from the Tangerine app).
+2. Browse catalog - Open the Tangerine app in Respect and browse to a form.
+3. Submit a form - Open a Tangerine form in Respect. It should open in the Tangerine app. Submit the form. Uninstall Tangerine app and again open the same form from Respect. It should open in a webview. Submit the form. Check the Tangerine server and Respect server for results.
+4. Use offline - Download a Tangerine form in Respect and disconnect from the internet. Open the form from Respect. It should open in the Tangerine app. Submit the form. Uninstall Tangerine app and again open the same form from Respect. It should open in a webview. Submit the form. Reconnect to the internet. Check the Tangerine server and Respect server for results.
+
+Tangerine Test Cases
+1. Login - Log in and logout. Select last login and username from the dropdowns, then log in. Clear login history from the menu and log out. There should be no saved servers in the login server dropdown.
+2. Submit a form - Open, fill and submit a form. Check whether it reached the server
+3. Use a form offline - Download a form and disconnect from internet. Open, fill and submit a form. Reconnect to the internet and check if it reached the server.
+4. Use a group offline - Download a group and disconnect from the internet. Open the group and then open, fill and submit a form. Reconnect to the internet and check if it reached the server.

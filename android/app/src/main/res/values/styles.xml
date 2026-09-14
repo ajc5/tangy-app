@@ -7,16 +7,29 @@
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="colorAccent">@color/colorAccent</item>
+        <!-- The shell header is always dark navy (#212a3f), and Android 15+
+             draws edge-to-edge so the status bar sits directly on top of it.
+             "Light" status-bar appearance means DARK icons, so it must be off
+             or the clock/battery are invisible against the header. -->
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 
     <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
+        <!-- NOTE: AndroidManifest.xml gives the <activity> THIS style, and
+             Capacitor never switches it to a postSplashScreenTheme, so this is
+             the theme actually in force for the whole session. It has to declare
+             the status-bar appearance too, or the framework falls back to the
+             Theme.SplashScreen default (light status bar -> dark icons on the
+             navy header). This was the real cause of the invisible clock. -->
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

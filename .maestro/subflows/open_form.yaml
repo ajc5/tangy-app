@@ -1,0 +1,21 @@
+# From the Groups screen: open a group, then open a form and wait until the
+# form (in the plugin's native overlay WebView) is ready to be filled.
+#
+# Requires: GROUP_NAME, FORM_NAME.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- tapOn: "${GROUP_NAME}"
+
+- extendedWaitUntil:
+    visible: "${FORM_NAME}"
+    timeout: 30000
+
+- tapOn: "${FORM_NAME}"
+
+# The form renders in the plugin's own WebView; its Submit button (a
+# paper-button with id "complete") is the marker that it is interactive.
+- extendedWaitUntil:
+    visible:
+      id: "complete"
+    timeout: 60000

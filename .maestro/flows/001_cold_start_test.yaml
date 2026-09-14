@@ -1,0 +1,21 @@
+# Smoke test: a clean launch restores no session and lands on the login
+# (server URL) screen.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible: "Enter your server URL"
+    timeout: 30000
+
+# Login chrome is present and we are not signed in.
+- assertVisible: "Menu"
+- assertVisible: "Enter your server URL"
+- assertNotVisible: "Groups"
+
+# Focusing the empty server field offers the built-in demo server.
+- tapOn:
+    id: "server-url"
+- assertVisible: "https://tangy.is-local.host"

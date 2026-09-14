@@ -1,0 +1,24 @@
+# "Clear Login History" removes saved login history but keeps the current
+# session: confirming it while signed in must NOT log the user out.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_out.yaml"
+
+- runFlow: "../subflows/login.yaml"
+- assertVisible: "Groups"
+
+- tapOn: "Menu"
+- tapOn: "Clear Login History"
+
+# A native confirm dialog is shown; confirm it.
+- extendedWaitUntil:
+    visible: "(?i)^ok$"
+    timeout: 10000
+- tapOn: "(?i)^ok$"
+
+# Session untouched — still on the Groups screen.
+- assertVisible: "Groups"
+- assertNotVisible: "Enter your server URL"

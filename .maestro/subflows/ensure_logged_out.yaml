@@ -1,0 +1,46 @@
+# Put the app on the login step-1 screen WITHOUT wiping app data.
+#
+# Unlike `launchApp: { clearState: true }` (which is `pm clear` and destroys the
+# WebView localStorage markers AND the native offline cache), this normalises
+# whatever screen the app happens to be on into "signed out, step 1":
+#
+#   group list / form list -> log out -> credentials -> Change -> step 1
+#   credentials            -> Change -> step 1
+#   step 1                 -> nothing to do
+#
+# Assumes the calling flow has already launched the app.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+# Force a fresh start. `launchApp` alone only resumes the existing activity, so a
+# form overlay left open by a previous flow would still be covering the shell
+# (and its "Menu" button would not be visible).
+- stopApp
+- launchApp
+
+# Wait for the app to finish booting before deciding anything: views.init()
+# picks a screen synchronously, but nothing is rendered until it runs. The
+# burger menu is part of every screen (login and signed-in alike).
+- extendedWaitUntil:
+    visible: "Menu"
+    timeout: 30000
+
+# Signed in? The list screens carry a back button in the header; the login
+# screens do not. Do NOT test for the group/form list itself: that element is
+# created as soon as the screen renders, but stays empty - and therefore not
+# "visible" - until its feed request resolves, so the check races the network.
+- runFlow:
+    when:
+      visible: "Back"
+    commands:
+      - runFlow: "logout.yaml"
+
+# Logout returns to the credentials step; the calling flows expect step 1.
+# `optional` because we may already be there.
+- tapOn:
+    id: "change-server-btn"
+    optional: true
+
+- extendedWaitUntil:
+    visible: "Enter your server URL"
+    timeout: 30000

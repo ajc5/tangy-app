@@ -1,0 +1,31 @@
+# Logging out returns to the credentials screen, keeps the remembered server
+# URL, and clears the session.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_out.yaml"
+
+- runFlow: "../subflows/login.yaml"
+- assertVisible: "Groups"
+
+- tapOn: "Menu"
+- tapOn: "Logout"
+
+# Dismiss the logout confirmation if it appears (the app's back-button handler
+# can surface it); the suite's other flows handle native dialogs the same way.
+- runFlow:
+    when:
+      visible: "(?i)^ok$"
+    commands:
+      - tapOn: "(?i)^ok$"
+
+# Back on the credentials screen (the server URL is remembered), signed out.
+- extendedWaitUntil:
+    visible:
+      id: "login-btn"
+    timeout: 15000
+- assertVisible: "Server:"
+- assertVisible: "${SERVER_URL}"
+- assertNotVisible: "Groups"

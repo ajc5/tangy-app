@@ -1,0 +1,41 @@
+# Tangerine cases 3 & 4, phase 2 (OFFLINE) — open the downloaded form, fill and
+# submit it with no connectivity.
+#
+# Shared by both cases: the only difference between them is what got downloaded
+# beforehand (a form vs the whole group), which phase 1 handles.
+#
+# Nothing here may log out, and no state may be cleared: the app must be able to
+# serve the group list, the form list and the form itself from its disk cache.
+#
+# Requires: GROUP_NAME, FORM_NAME, ANSWER. SERVER_URL/USERNAME/PASSWORD only if
+# the stored session was lost.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_in.yaml"
+
+# Cached lists still render offline; the timeout is generous because the native
+# layer tries the network first and only then falls back to disk for anything
+# that could not be served from the cache directly.
+- extendedWaitUntil:
+    visible: "${GROUP_NAME}"
+    timeout: 60000
+- tapOn: "${GROUP_NAME}"
+
+- extendedWaitUntil:
+    visible: "${FORM_NAME}"
+    timeout: 60000
+- tapOn: "${FORM_NAME}"
+
+- extendedWaitUntil:
+    visible:
+      id: "complete"
+    timeout: 120000
+
+- runFlow: "../subflows/fill_and_submit_form.yaml"
+
+# The overlay closing proves the submit path completed; offline the completed
+# response is held in the form app's outbox instead of being uploaded.
+- extendedWaitUntil:
+    visible: "${FORM_NAME}"
+    timeout: 120000

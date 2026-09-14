@@ -36,12 +36,26 @@ class CacheService {
     return false;
   }
 
-  async downloadAndRetain(urls) {
+  /**
+   * Fetch and retain every URL so it can be served offline later.
+   *
+   * @param {Array<{url: string, remark?: string}>} urls
+   * @param {(done: number, total: number) => void} [onProgress] Called after each URL.
+   * @param {{cancelled: boolean}} [signal] Cooperative cancel flag: checked
+   *   before each request, so a cancel takes effect within one request.
+   */
+  async downloadAndRetain(urls, onProgress, signal) {
     await this.init();
     const jobId = `pin-${Date.now()}`;
-    const results = { jobId, cached: 0, failed: 0, urls: [] };
+    const results = { jobId, cached: 0, failed: 0, cancelled: false, urls: [] };
 
+    let done = 0;
     for (const { url, remark } of urls) {
+      if (signal && signal.cancelled) {
+        results.cancelled = true;
+        console.log(`[CacheService] Cancelled after ${done}/${urls.length} URLs`);
+        break;
+      }
       try {
         const resp = await httpClient.get(url, {
           'Authorization': localStorage.getItem('token'),
@@ -56,6 +70,15 @@ class CacheService {
       } catch (e) {
         results.failed++;
         console.warn(`[CacheService] Pin failed for ${url}:`, e.message);
+      }
+
+      // Drive determinate progress UIs. A throwing listener must never abort
+      // the pin itself, so it is isolated from the loop's error handling.
+      done++;
+      if (typeof onProgress === 'function') {
+        try {
+          onProgress(done, urls.length);
+        } catch (e) { /* ignore */ }
       }
     }
     return results;

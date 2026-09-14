@@ -1,0 +1,24 @@
+# Fill the first question of the currently-open form and submit it.
+#
+# The app closes the overlay itself once the completed response has been
+# uploaded (and any xAPI statements delivered), so the overlay disappearing is
+# the signal that the submit path finished.
+#
+# Requires: ANSWER.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+# The first question is a tangy-input, whose inner paper-textarea exposes the
+# DOM id "textarea" to the accessibility tree.
+- tapOn:
+    id: "textarea"
+- inputText: "${ANSWER}"
+
+- tapOn:
+    id: "complete"
+
+# Overlay closed -> back on the form list.
+- extendedWaitUntil:
+    notVisible:
+      id: "complete"
+    timeout: 60000

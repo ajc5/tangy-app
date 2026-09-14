@@ -1,0 +1,18 @@
+# Entering a server URL advances to the credentials screen, and "Change"
+# returns to step 1 with the URL retained.
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_out.yaml"
+
+- runFlow: "../subflows/goto_login_step2.yaml"
+
+# Credentials screen shows the server we connected to.
+- assertVisible: "Server:"
+- assertVisible: "${SERVER_URL}"
+
+# "Change" goes back to step 1 and keeps the URL in the field.
+- tapOn:
+    id: "change-server-btn"
+- assertVisible: "Enter your server URL"
+- assertVisible: "${SERVER_URL}"
