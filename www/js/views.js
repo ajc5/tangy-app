@@ -280,6 +280,47 @@ const views = {
   },
 
   /**
+   * Copy `text` to the system clipboard, resolving true on success.
+   *
+   * The synchronous execCommand path is tried FIRST on purpose. Android WebView
+   * refuses the async Clipboard API unless the host app grants
+   * RESOURCE_CLIPBOARD_WRITE from its WebChromeClient, which the Capacitor shell
+   * does not - navigator.clipboard.writeText() rejects with
+   * "NotAllowedError: Write permission denied". execCommand('copy') needs the
+   * click's transient user activation, so it must run inside the event handler
+   * rather than in a promise catch, where the activation may already have
+   * expired.
+   */
+  _copyTextToClipboard(text) {
+    const legacyOk = this._legacyCopyText(text);
+    if (legacyOk) return Promise.resolve(true);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+    }
+    return Promise.resolve(false);
+  },
+
+  /** Synchronous clipboard write; returns whether the browser reported success. */
+  _legacyCopyText(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    // Offscreen but still selectable - display:none cannot be selected.
+    ta.style.cssText = 'position:fixed;top:-1000px;left:0;opacity:0;';
+    document.body.appendChild(ta);
+    let ok = false;
+    try {
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      ok = document.execCommand('copy');
+    } catch (e) {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+    return ok;
+  },
+
+  /**
    * Shared header bar used on both logged-in and login screens.
    *
    * @param {Object}   [options]
@@ -379,30 +420,22 @@ const views = {
         this.clearLoginHistory();
       });
       dropdown.querySelector('.dropdown-item-respect').addEventListener('click', () => {
-        dropdown.classList.remove('open');
         const link = api.getRespectUrl();
         if (!link) {
           alert('No RESPECT URL available. Please log in again.');
           return;
         }
-        navigator.clipboard.writeText(link).then(() => {
-          // Brief visual feedback
-          const btn = dropdown.querySelector('.dropdown-item-respect');
-          const origText = btn.textContent;
-          btn.textContent = '✓ Copied!';
-          setTimeout(() => { btn.textContent = origText; }, 2000);
-        }).catch(() => {
-          // Fallback for older browsers
-          const textArea = document.createElement('textarea');
-          textArea.value = link;
-          document.body.appendChild(textArea);
-          textArea.select();
-          document.execCommand('copy');
-          document.body.removeChild(textArea);
-          const btn = dropdown.querySelector('.dropdown-item-respect');
-          const origText = btn.textContent;
-          btn.textContent = '✓ Copied!';
-          setTimeout(() => { btn.textContent = origText; }, 2000);
+        const btn = dropdown.querySelector('.dropdown-item-respect');
+        const origText = btn.textContent;
+        // Deliberately do NOT close the menu first: the feedback lives on this
+        // button, and closing left it inside a display:none container where the
+        // user could never see it.
+        this._copyTextToClipboard(link).then((ok) => {
+          btn.textContent = ok ? '✓ Copied!' : '✗ Copy failed';
+          setTimeout(() => {
+            btn.textContent = origText;
+            dropdown.classList.remove('open');
+          }, 1200);
         });
       });
     }

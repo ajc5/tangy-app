@@ -1,0 +1,31 @@
+# R1, phase 1 — copy the RESPECT manifest link out of the Tangerine app.
+#
+# The RESPECT wiki procedure says "Login to the Respect server and add the
+# Tangerine app (copy RESPECT manifest link from the Tangerine app)", so this
+# half must exercise the app's own copy affordance, not a hand-built URL.
+#
+# The menu item flips to "✓ Copied!" when the clipboard write resolves. On
+# Android WebView the async Clipboard API is denied (NotAllowedError) unless the
+# host app grants RESOURCE_CLIPBOARD_WRITE, so views.js tries the synchronous
+# execCommand path first — it has to run inside the click's user-activation
+# window, which is why the old promise-catch fallback silently did nothing.
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_in.yaml"
+
+# Header burger -> "Copy RESPECT Link".
+- tapOn: "Menu"
+- assertVisible: "Copy RESPECT Link"
+- tapOn: "Copy RESPECT Link"
+
+# The menu closes itself ~1.2s after the copy resolves. NOTE: the transient
+# "✓ Copied!" label is deliberately NOT asserted here — Maestro cannot reliably
+# observe it, and it is not the real contract. The clipboard contents are proven
+# by pasting into RESPECT (flows 025/026), which is what the wiki procedure
+# actually requires.
+- extendedWaitUntil:
+    notVisible: "Copy RESPECT Link"
+    timeout: 15000

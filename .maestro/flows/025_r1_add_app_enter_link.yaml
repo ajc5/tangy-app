@@ -1,0 +1,26 @@
+# R1, phase 2a — enter the copied manifest link into RESPECT.
+#
+# Split from the paste on purpose: Maestro has no clipboard API, so the driver
+# runs `adb shell input keyevent 279` (KEYCODE_PASTE) between this flow and
+# 026_r1_add_app_confirm.yaml. Pasting for real is what proves the handoff from
+# the Tangerine app's "Copy RESPECT Link".
+#
+# The "+ App" FAB is a clickable View with NO accessible label -> point tap.
+appId: world.respect.app
+---
+- launchApp
+- assertVisible: "Apps"
+
+# Already in the catalog? Then R1 has nothing left to do.
+- runFlow:
+    when:
+      notVisible: "Tangerine"
+    commands:
+      - tapOn:
+          point: "84%,84%"
+      - assertVisible: "Select app"
+      - tapOn: "Add from Link"
+      - assertVisible: "Enter link"
+      # Focus the "Link*" field so the driver's PASTE lands in it.
+      - tapOn:
+          point: "50%,24%"

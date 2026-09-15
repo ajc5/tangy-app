@@ -1,0 +1,39 @@
+# R3, phase 1 (ONLINE) — pin a Tangerine form for offline use from inside RESPECT.
+#
+# The catalogue case says "Download a Tangerine form in Respect and disconnect
+# from the internet", so the download has to be initiated in RESPECT's own UI
+# (its learning-unit detail quick action), not in the Tangerine app.
+#
+# RESPECT's quick action is labelled with its pin state, the same vocabulary the
+# Tangerine badge uses: Download -> Cancel (while running) -> Downloaded.
+#
+# Requires: R1 to have added the Tangerine app to the school.
+appId: world.respect.app
+---
+- runFlow: "../subflows/respect_goto_base_form.yaml"
+
+# The learning-unit detail offers the quick actions (Download / Bookmark /
+# Assign) plus "Open".
+#
+# Start from an UN-pinned state so the download genuinely runs. The quick action
+# is a toggle: if an earlier run already pinned this form it reads "Downloaded",
+# and one tap returns it to "Download" (verified on device - no menu/dialog).
+# Without this reset the run would silently skip the very step R3 is about.
+- runFlow:
+    when:
+      visible: "Downloaded"
+    commands:
+      - tapOn: "Downloaded"
+      - extendedWaitUntil:
+          visible: "Download"
+          timeout: 60000
+
+- assertVisible: "Download"
+- tapOn: "Download"
+
+# While the job runs the action reads "Cancel"; it settles on "Downloaded".
+- extendedWaitUntil:
+    visible: "Downloaded"
+    timeout: 300000
+
+- assertVisible: "Downloaded"

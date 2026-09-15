@@ -1,0 +1,13 @@
+# R3 (offline), open step — tap "Open" on a form detail RESPECT is ALREADY on.
+#
+# Deliberately does NOT launch/navigate, unlike 023. Offline, a RESPECT cold
+# start is not viable: its startup blocks on network and the system kills it
+# ("ANR in world.respect.app ... failed to complete startup"), which made the
+# offline webview phase fail. So the driver parks RESPECT on the detail screen
+# while still online, severs the network, and this flow does only the Open tap -
+# which is also what the case describes (the user has the app open, then
+# disconnects).
+appId: world.respect.app
+---
+- assertVisible: "Open"
+- tapOn: "Open"

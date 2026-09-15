@@ -149,4 +149,14 @@ export class TangyCacheWeb implements TangyCachePlugin {
     // Web: no RESPECT launcher IPC available. Nothing to relay.
     return { ok: false, count: 0, result: 'xAPI IPC not supported on web' };
   }
+
+  async queueXapiStatements(_options: {
+    endpoint: string;
+    auth: string;
+    ipcPackage: string;
+    statementsJson: string;
+  }): Promise<{ ok: boolean; pending: number }> {
+    // Web: no native delivery queue. The caller keeps its own copy.
+    return { ok: false, pending: 0 };
+  }
 }

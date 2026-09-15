@@ -1,0 +1,13 @@
+# R2, phase 1 — open a Tangerine form FROM RESPECT so it hands off to the app.
+#
+# Just the navigation and the Open tap: "Open" fires ACTION_VIEW on the lesson
+# URL, which the installed Tangerine app claims (it is a non-browser handler), so
+# the lesson opens in the app rather than in RESPECT's own WebView. The driver
+# asserts which path was taken from RESPECT's logcat and then drives the
+# submission in the app (022).
+#
+# Requires: R1 to have added the Tangerine app, and the app to be installed.
+appId: world.respect.app
+---
+- runFlow: "../subflows/respect_goto_base_form.yaml"
+- tapOn: "Open"

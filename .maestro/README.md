@@ -61,6 +61,90 @@ maestro test \
 | `005_login_success_test.yaml` | yes | Full login reaches "Groups"; the menu shows the user and actions. |
 | `006_logout_test.yaml` | yes | Logout returns to the credentials screen and keeps the server URL. |
 | `007_clear_login_history_test.yaml` | yes | "Clear Login History" keeps the current session (does not log you out). |
+| `011_tangerine_submit_form.yaml` | yes | T1-2: open, fill and submit a form; the server gains the response. |
+| `012_tangerine_offline_download_form.yaml` | yes | T1-3 phase 1: pin a form; badge `Download` -> `Downloaded`. |
+| `013_tangerine_offline_download_group.yaml` | yes | T1-4 phase 1: pin a whole group; badge `Download` -> `Downloaded`. |
+| `014_tangerine_offline_submit.yaml` | no | T1-3/4 phase 2: open the pinned form, fill and submit it offline. |
+| `015_tangerine_offline_flush.yaml` | no | T1-3/4 phase 3: re-open the form app so the queued response uploads. |
+| `016_tangerine_cancel_group_download.yaml` | yes | A second tap on a busy badge cancels the group download; nothing is marked cached. |
+| `020_r1_respect_remove_app.yaml` | no | RESPECT R1: clear Tangerine from RESPECT's catalog via the tile's 3-dot -> Remove, so the add below is exercised instead of skipped (no-op when already absent). |
+| `021_r1_tangerine_copy_link.yaml` | yes | RESPECT R1: copy the manifest link out of the Tangerine menu. |
+| `022_r2_submit_via_app.yaml` | no | RESPECT R2: submit the form RESPECT handed off to the app (starts in the overlay). |
+| `023_r2_respect_open_form.yaml` | no | RESPECT R2: browse to the form and tap Open (triggers the handoff). |
+| `024_r2_webview_open.yaml` | no | RESPECT R2/R3: with the app uninstalled, open, fill and submit in RESPECT's WebView. |
+| `025_r1_add_app_enter_link.yaml` | no | RESPECT R1: reach the "Enter link" screen and focus the field (skips the navigation when the app is somehow already added). |
+| `026_r1_add_app_confirm.yaml` | no | RESPECT R1: assert the pasted link, confirm the add, and see the app return as a tile on Home. |
+| `027_r3_respect_download_form.yaml` | no | RESPECT R3: pin the form from RESPECT's own quick action. |
+| `028_r3_respect_open_only.yaml` | no | RESPECT R3: tap Open on a detail screen RESPECT is already parked on (no launch/navigate). |
+| `029_r3_webview_submit_only.yaml` | no | RESPECT R3: Open + fill + submit in RESPECT's WebView; no navigation, for the offline half. |
+| `030_r3_force_flush_submit.yaml` | yes | RESPECT R3: submit a form to force the queued xAPI statements out (a submission is the trigger; re-opening alone is not). |
+
+## RESPECT cases (two apps + the device)
+
+R1-R3 live in `docs/ui-test-cases.txt` and span two apps *and* device state, so
+they are driven by a shell script that interleaves Maestro flows with `adb`:
+
+```
+./.maestro/run-respect.sh [r1|r2|r3|all]
+```
+
+Why a driver: the clipboard handoff needs `adb shell input keyevent 279` between
+the apps (Maestro has no clipboard API); the fallback half needs the Tangerine app
+*uninstalled* and re-installed afterwards; the offline half needs the emulator's
+network severed. Every phase is asserted on **both** servers — Tangerine's CouchDB
+(`<server>/db/<group>/_all_docs`) and RESPECT's xAPI statements, which surface in
+logcat as the launcher forwarding them to the school LRS with HTTP 200.
+
+The driver must be pointed at a **debug** APK for the re-install step:
+
+```
+APK=android/app/build/outputs/apk/debug/app-debug.apk ./.maestro/run-respect.sh all
+```
+
+### RESPECT gotchas these cases hit
+
+* **RESPECT cannot cold-start offline.** Its startup blocks on network and the
+  system kills it (`ANR in world.respect.app … failed to complete startup`, ~20s
+  after launch), leaving the launcher on screen. R3 therefore parks RESPECT on the
+  form detail **while online**, severs the network, and only then taps Open (028 /
+  029). `respect_goto_base_form.yaml` is online-only for this reason.
+* **RESPECT drops taps** right after a screen change; a missed tap otherwise burns
+  a full 60s assertion. The navigate+Open and park steps retry once.
+* **A submission is what relays queued xAPI statements.** Re-opening the form app
+  flushes the queued *response*, but the queued *statements* only leave when the
+  app next submits — hence 030. Polling for the LRS POST after merely resuming
+  times out even though the relay is healthy.
+* **Assertions are polled, never sampled once.** The statements are POSTed tens of
+  seconds after the response is accepted, so a single check taken right after the
+  response lands reports a false negative.
+* **Phase output is timestamped** so captured logcat can be attributed to a phase.
+* **RESPECT persists added apps, so R1 must un-add first.** RESPECT stores the
+  apps added to a school, and `025` short-circuits when Tangerine is already in
+  the catalog — so every run after the first silently skipped the add and R1
+  reported success without ever testing the clipboard handoff. `020` clears the
+  entry first: tap the 3 vertical dots at the tile's top-right, then `Remove`
+  (no confirmation dialog). The 3-dot is a clickable `View` with no text and no
+  `contentDescription`, so it must be reached by point (`25%,22%` with one tile
+  in the grid on 1080x2400). `026` then asserts `Add to school apps` is present,
+  which is only sound because `020` guaranteed an empty catalog.
+* **Anchor assertions on a screen-unique label.** RESPECT's App detail screen
+  shows the app title, so a bare `assertVisible: "Tangerine"` is satisfied before
+  the app is ever added. `020`/`026` assert `Bookmarks` (Home's tab bar) to pin
+  the screen. The App detail back button is labelled `Back`, **not** `Navigate up`
+  (the latter is RESPECT's own WebView toolbar), and adding an app does not pop
+  the stack — back out of `App detail -> Enter link -> Select app`.
+* **RESPECT gets killed mid-flow on this emulator.** A delayed key event ANRs its
+  main thread — `Input dispatching timed out … Waited 5076ms for KeyEvent` — and
+  the system follows with `Force finishing activity world.respect.app`, leaving
+  the launcher on screen. `026` then fails on its first assertion with the app
+  under test blameless. Steps 2-4 of R1 are retried as a unit, each attempt
+  re-clearing the catalog via `020` so the add stays genuine, and a final failure
+  consults the log to report "RESPECT was killed by the system" instead of the
+  misleading "the link was rejected".
+* LRS evidence is matched with `grep -cE`, **never** plain `grep -c`: BSD grep
+  rejects `\)` in a BRE with "parentheses not balanced", exits 2 and prints
+  nothing, which a `$(…)` capture turns into "0 matches". The driver now fails
+  fast if a log pattern does not compile.
 
 ## Shared subflows
 

@@ -1,0 +1,13 @@
+# R2, phase 1 — submit a form that RESPECT handed off to the Tangerine app.
+#
+# RESPECT fires ACTION_VIEW on the lesson URL with the endpoint/auth/actor
+# params; the Tangerine app claims it (non-browser handler) and opens the form
+# in its cached-WebView overlay. This flow therefore starts from that overlay
+# and deliberately does NOT launch or log in — it must run against the exact
+# state RESPECT produced.
+#
+# Requires: ANSWER
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/fill_and_submit_form.yaml"

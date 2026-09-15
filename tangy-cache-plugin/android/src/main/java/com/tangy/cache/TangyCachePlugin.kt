@@ -51,11 +51,6 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
-import world.respect.lib.dataloadstate.DataReadyState
-import world.respect.lib.xapi.model.XapiStatement
-import world.respect.xapi.ipc.client.XapiIpcClientBuilder
 import org.openeel.libcache.ipc.client.HttpIpcClient
 import org.openeel.libcache.ipc.client.HttpIpcClientBuilder
 import okhttp3.Interceptor
@@ -95,15 +90,6 @@ data class PendingSubmission(
     val method: String,
     val headers: Map<String, String>,
     val body: String,
-    val createdAt: Long
-)
-
-data class PendingXapi(
-    val id: String,
-    val endpoint: String,
-    val auth: String,
-    val ipcPackage: String,
-    val statementsJson: String,
     val createdAt: Long
 )
 
@@ -203,14 +189,15 @@ class TangyCachePlugin : Plugin() {
         return dir
     }
 
-    // Directory for xAPI statement batches that could not be delivered to the
-    // RESPECT launcher (IPC unreachable / offline) at submit time. Replayed when
-    // connectivity returns.
-    private fun xapiPendingDir(): File {
-        val dir = File(activity?.filesDir, "tangy-pending-xapi")
-        if (!dir.exists()) dir.mkdirs()
-        return dir
-    }
+    // Directory of xAPI statement batches still waiting for the RESPECT launcher.
+    // Owned by XapiDelivery, which also schedules the WorkManager delivery job.
+    private fun xapiPendingDir(): File = XapiDelivery.pendingDir(contextForWork())
+
+    /**
+     * A Context that outlives the Activity: the xAPI delivery queue is drained by
+     * WorkManager, which may run when no Activity exists at all.
+     */
+    private fun contextForWork(): Context = activity?.applicationContext ?: context.applicationContext
 
     private fun parseHeaderMap(headersJson: String): Map<String, String> {
         if (headersJson.isBlank()) return emptyMap()
@@ -574,6 +561,9 @@ class TangyCachePlugin : Plugin() {
             view?.evaluateJavascript(FORM_INTERCEPT_SCRIPT, null)
             view?.evaluateJavascript(PERMISSION_HELP_SCRIPT, null)
             view?.evaluateJavascript(XAPI_RELAY_SCRIPT, null)
+            // Move xAPI batches the form player parked in its own localStorage outbox
+            // into the native delivery queue (disk + WorkManager).
+            view?.evaluateJavascript(XAPI_OUTBOX_MIRROR_SCRIPT, null)
             view?.evaluateJavascript(XHR_QUEUE_SCRIPT, null)
             // Auto-close after submission (returns to the Tangerine form list for
             // forms opened from it; RESPECT-launched lessons are handled natively).
@@ -1572,79 +1562,57 @@ class TangyCachePlugin : Plugin() {
     }
 
     /**
-     * Persist a batch of xAPI statements that could not be delivered now, so they
-     * are replayed (to the same launcher IPC target) once connectivity returns.
+     * Hand a batch of xAPI statements to the native delivery queue (disk + a
+     * connectivity-constrained WorkManager job) instead of letting the lesson WebView
+     * try to deliver it itself. Returns true once the batch is durable, which is the
+     * signal the caller uses to drop its own copy. Synchronous by design: the WebView
+     * must not clear its outbox entry before the batch is safely stored here.
      */
-    private fun queueXapiPending(endpoint: String, auth: String, ipcPackage: String, statementsJson: String) {
-        try {
-            val dir = xapiPendingDir()
-            val id = UUID.randomUUID().toString()
-            val item = PendingXapi(id, endpoint, auth, ipcPackage, statementsJson, System.currentTimeMillis())
-            File(dir, "$id.json").writeText(gson.toJson(item), Charsets.UTF_8)
-            Log.i(TAG, "Queued $id xAPI statements for offline delivery (launcher $ipcPackage unreachable)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Could not queue xAPI statements for offline delivery", e)
-        }
+    @PluginMethod
+    fun queueXapiStatements(call: PluginCall) {
+        val endpoint = call.getString("endpoint")
+            ?: return call.reject("endpoint is required")
+        val auth = call.getString("auth")
+            ?: return call.reject("auth is required")
+        val ipcPackage = call.getString("ipcPackage")
+            ?: return call.reject("ipcPackage is required")
+        val statementsJson = call.getString("statementsJson")
+            ?: return call.reject("statementsJson is required")
+
+        val ctx = contextForWork()
+        val queued = XapiDelivery.accept(ctx, endpoint, auth, ipcPackage, statementsJson)
+        call.resolve(JSObject().apply {
+            put("ok", queued)
+            put("pending", XapiDelivery.pendingCount(ctx))
+        })
     }
 
     /** Blocking (suspend) delivery of one xAPI batch to the launcher over IPC. */
-    private suspend fun deliverXapiNow(endpoint: String, auth: String, ipcPackage: String, statementsJson: String): Boolean {
-        val ctx = activity?.applicationContext ?: return false
-        return try {
-            val json = Json { ignoreUnknownKeys = true }
-            val statements = json.decodeFromString(
-                ListSerializer(XapiStatement.serializer()), statementsJson
-            )
-            val client = XapiIpcClientBuilder(ctx, endpoint)
-                .setAuth(auth)
-                .setJson(json)
-                .setIpcServicePackageName(ipcPackage)
-                .build()
-            try {
-                val result = client.statements.post(statements)
-                val ok = result is DataReadyState
-                Log.i(TAG, "Delivered ${statements.size} xAPI statements to $ipcPackage (ok=$ok): $result")
-                ok
-            } finally {
-                try { client.close() } catch (_: Throwable) { /* ignore */ }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "deliverXapiNow failed", e)
-            false
-        }
-    }
+    private suspend fun deliverXapiNow(endpoint: String, auth: String, ipcPackage: String, statementsJson: String): Boolean =
+        XapiDelivery.deliver(
+            contextForWork(),
+            PendingXapi("", endpoint, auth, ipcPackage, statementsJson, 0L)
+        )
 
     /** Replay every queued xAPI batch; returns how many were delivered. */
-    private suspend fun replayQueuedXapi(): Int {
-        val files = xapiPendingDir().listFiles()?.filter { it.name.endsWith(".json") } ?: emptyList()
-        var sent = 0
-        for (file in files) {
-            try {
-                val item = gson.fromJson(file.readText(Charsets.UTF_8), PendingXapi::class.java)
-                if (deliverXapiNow(item.endpoint, item.auth, item.ipcPackage, item.statementsJson)) {
-                    file.delete()
-                    sent++
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "xAPI replay failed for ${file.name}: ${e.message}")
-            }
-        }
-        return sent
-    }
+    private suspend fun replayQueuedXapi(): Int = XapiDelivery.deliverPending(contextForWork())
 
     /**
      * Shared relay used by both the Capacitor @PluginMethod and the WebView TangyCacheBridge.
      * Runs off the main thread; onResult is invoked on the plugin's IO scope.
-     * Offline persistence is handled by the online-survey-app's own outbox when present
-     * (it sets window.__tangerineOutboxActive), so by default we do NOT also queue here
-     * (avoids double delivery). queueOnFailure can re-enable it for hosts without the outbox.
+     *
+     * When the launcher cannot be reached *or* the launcher cannot reach the LRS, the batch
+     * is handed to [XapiDelivery] instead of being dropped: it is written to disk and a
+     * connectivity-constrained WorkManager job takes over, so delivery survives the app
+     * being killed before the network comes back. "ok" therefore means "delivered or
+     * durably queued" - the caller may drop its own copy either way.
      */
     private fun forwardStatementsViaIpc(
         endpoint: String,
         auth: String,
         ipcPackage: String,
         statementsJson: String,
-        queueOnFailure: Boolean = false,
+        queueOnFailure: Boolean = true,
         onResult: ((ok: Boolean, count: Int, result: String) -> Unit)? = null
     ) {
         val ctx = activity?.applicationContext
@@ -1654,11 +1622,17 @@ class TangyCachePlugin : Plugin() {
             return
         }
         scope.launch {
-            val ok = deliverXapiNow(endpoint, auth, ipcPackage, statementsJson)
-            if (!ok && queueOnFailure) {
-                queueXapiPending(endpoint, auth, ipcPackage, statementsJson)
+            val delivered = deliverXapiNow(endpoint, auth, ipcPackage, statementsJson)
+            var ok = delivered
+            var result = if (delivered) "delivered" else "failed"
+            if (!delivered && queueOnFailure) {
+                // attemptNow = false: this path has just tried the IPC hop itself.
+                ok = XapiDelivery.accept(
+                    ctx, endpoint, auth, ipcPackage, statementsJson, attemptNow = false
+                )
+                result = if (ok) "queued" else "failed"
             }
-            onResult?.invoke(ok, 0, if (ok) "delivered" else "failed")
+            onResult?.invoke(ok, 0, result)
         }
     }
 
@@ -1692,6 +1666,9 @@ class TangyCachePlugin : Plugin() {
         super.load()
         registerActivityLaunchers()
         registerConnectivitySync()
+        // WorkManager holds the xAPI delivery job across process death; re-arm it here
+        // in case the device went offline while this app was not running.
+        XapiDelivery.enqueueIfPending(contextForWork())
     }
 
     /**
@@ -1859,6 +1836,22 @@ class TangyCachePlugin : Plugin() {
         }
 
         /**
+         * Called by the injected outbox mirror (XAPI_OUTBOX_MIRROR_SCRIPT). Takes ownership of
+         * an xAPI batch the lesson WebView could not deliver: it is written to disk and a
+         * connectivity-constrained WorkManager job delivers it to the launcher over IPC, even
+         * if this app is killed before the network returns. Returns true only once the batch is
+         * durable, so the caller can safely drop its own copy.
+         */
+        @android.webkit.JavascriptInterface
+        fun queueXapiStatements(endpoint: String, auth: String, ipcPackage: String, statementsJson: String): Boolean {
+            val queued = XapiDelivery.accept(
+                this@TangyCachePlugin.contextForWork(), endpoint, auth, ipcPackage, statementsJson
+            )
+            Log.i(TAG, "TangyCacheBridge.queueXapiStatements($ipcPackage) -> queued=$queued")
+            return queued
+        }
+
+        /**
          * Called by the injected form-submit watcher (FORM_SUBMIT_WATCH_SCRIPT) once a
          * form run in this WebView reaches the player's "form submitted" success
          * state. Forms opened from the Tangerine group/form list close and reveal
@@ -1980,6 +1973,93 @@ class TangyCachePlugin : Plugin() {
                     if (++attempts > 200) return; // ~20s cap
                     setTimeout(tryInstall, 100);
                 })();
+            })();
+        """
+
+        /**
+         * JavaScript injected into every cached WebView page.
+         *
+         * The form player keeps batches it cannot deliver in its own localStorage outbox
+         * (it refuses to relay at all while navigator.onLine is false). That outbox only has
+         * two exits: a Capacitor plugin call (unavailable here - this WebView has no Capacitor
+         * bridge) or a direct POST to the LRS, which fails from inside the app's WebView. So a
+         * batch submitted offline ends up stranded: retried forever, delivered never.
+         *
+         * This mirror moves such batches into the native delivery queue instead: any outbox
+         * item that names a launcher IPC package is handed to TangyCacheBridge
+         * .queueXapiStatements, which stores it on disk, tries the IPC hop to the launcher
+         * immediately (offline included - it is a local Binder call), and arms a
+         * connectivity-constrained WorkManager job for the retries. The item is then removed
+         * from the outbox, so there is exactly ONE owner of the batch. Delivery no longer
+         * depends on this page, or even on this app, staying alive until the network returns.
+         *
+         * Batches are handed over eagerly (on the outbox write that queued them and on every
+         * page load for anything left behind), and the native side is content-addressed, so a
+         * batch that is offered twice is still delivered once.
+         */
+        private const val XAPI_OUTBOX_MIRROR_SCRIPT = """
+            (function() {
+                if (window.__tangyXapiOutboxMirrorInjected) return;
+                window.__tangyXapiOutboxMirrorInjected = true;
+
+                var hasBridge = false;
+                try { hasBridge = !!(window.TangyCacheBridge && TangyCacheBridge.queueXapiStatements); } catch (e) {}
+                if (!hasBridge) return;
+
+                // Matches the offline outbox key(s) without hard-coding a version.
+                var OUTBOX_KEY_RE = /outbox/i;
+                var origSetItem = Storage.prototype.setItem;
+
+                function handOff(item) {
+                    if (!item || item.type !== 'xapi-statements') return false;
+                    if (!item.endpoint || !item.auth || !item.ipcPackage) return false;
+                    if (!item.statements || !item.statements.length) return false;
+                    try {
+                        var ok = TangyCacheBridge.queueXapiStatements(
+                            item.endpoint, item.auth, item.ipcPackage, JSON.stringify(item.statements)
+                        );
+                        if (ok === true) {
+                            console.log('[TangyCache] Handed a queued xAPI batch to the native delivery queue');
+                        }
+                        return ok === true;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+
+                // Returns the items left for the page to keep, or null when nothing moved.
+                function drain(raw) {
+                    var items;
+                    try { items = JSON.parse(raw); } catch (e) { return null; }
+                    if (!items || typeof items.length !== 'number') return null;
+                    var kept = [];
+                    var moved = 0;
+                    for (var i = 0; i < items.length; i++) {
+                        if (handOff(items[i])) { moved++; } else { kept.push(items[i]); }
+                    }
+                    return moved ? kept : null;
+                }
+
+                Storage.prototype.setItem = function(key, value) {
+                    try {
+                        if (typeof key === 'string' && typeof value === 'string' && OUTBOX_KEY_RE.test(key)) {
+                            var kept = drain(value);
+                            if (kept !== null) value = JSON.stringify(kept);
+                        }
+                    } catch (e) {}
+                    return origSetItem.call(this, key, value);
+                };
+
+                // Anything already stranded by an earlier page load or an earlier launch.
+                try {
+                    for (var i = 0; i < localStorage.length; i++) {
+                        var k = localStorage.key(i);
+                        if (k && OUTBOX_KEY_RE.test(k)) {
+                            var kept = drain(localStorage.getItem(k));
+                            if (kept !== null) origSetItem.call(localStorage, k, JSON.stringify(kept));
+                        }
+                    }
+                } catch (e) {}
             })();
         """
 

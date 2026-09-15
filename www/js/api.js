@@ -504,12 +504,45 @@ const api = {
       if (!response.ok) {
         const errorText = await response.text();
         console.log('[API] GET groups error body:', errorText);
+
+        // A RESPECT deep link stores the launch's Basic credentials as the
+        // immediate token, then upgrades to a real JWT session in the background.
+        // If the handoff happened while OFFLINE that upgrade cannot run - and it
+        // was only ever attempted once, at launch - so the app was left holding
+        // Basic indefinitely. /groups accepts JWT only, so every later render
+        // returned 401 and the group list stayed permanently blank.
+        // Retry the upgrade on the failure itself, so it self-heals as soon as the
+        // device is online again.
+        if (response.status === 401 && this._isBasicToken()) {
+          console.log('[API] Stored token is Basic and was rejected - retrying the session upgrade');
+          const upgraded = await this.loginFromBasicAuth(localStorage.getItem('token'));
+          if (upgraded) {
+            const retry = await httpClient.get(url, {
+              'Authorization': localStorage.getItem('token')
+            });
+            if (retry.ok) {
+              return this._groupsFromOpds(await retry.json());
+            }
+          }
+        }
         throw new Error('Failed to fetch groups: ' + response.status);
       }
-      data = await response.json();
+      return this._groupsFromOpds(await response.json());
     }
 
-    // Transform OPDS navigation entries into the format views.js expects
+    return this._groupsFromOpds(data);
+  },
+
+  /**
+   * Is the stored token a RESPECT launch's Basic credentials rather than a JWT?
+   * Basic is accepted by the OPDS feeds but rejected by /groups.
+   */
+  _isBasicToken() {
+    return /^Basic\s+/i.test(localStorage.getItem('token') || '');
+  },
+
+  /** Transform OPDS navigation entries into the group objects views.js expects. */
+  _groupsFromOpds(data) {
     if (data && data.navigation && Array.isArray(data.navigation)) {
       console.log('[API] Transforming OPDS navigation to group objects');
       return data.navigation.map(entry => ({

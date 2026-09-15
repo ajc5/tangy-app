@@ -1,0 +1,44 @@
+# R1, phase 0 — make the add path genuinely repeatable.
+#
+# RESPECT persists the apps added to a school, and 025 short-circuits when
+# Tangerine is already in the catalog. So on any run after the first, R1's add
+# was silently skipped while the suite still reported success — the clipboard
+# handoff (the thing R1 exists to test) was never exercised. Clear the catalog
+# entry first so 025 always has something real to add.
+#
+# RESPECT exposes this from the tile's overflow menu: the 3 vertical dots at the
+# tile's top-right -> "Remove" (removal is immediate; no confirmation dialog).
+# The 3-dot is a clickable View with NO text and NO contentDescription, so it can
+# only be reached by point. It sits at ~25%,22% of a 1080x2400 screen with one
+# tile in the grid (measured 272,517 device px).
+#
+# No-op when Tangerine is absent (first run, or already removed) — the closing
+# assertion states the postcondition either way, so R1 may assert an empty
+# catalog without caring how it got that way.
+#
+# Requires: RESPECT to be logged in (a school must be selected).
+appId: world.respect.app
+---
+- launchApp
+- assertVisible: "Apps"
+# "Bookmarks" only exists on Home. Asserting it pins the screen: the tile label
+# "Tangerine" below is unique, but relying on its ABSENCE is only sound if we
+# know which screen we are looking at.
+- assertVisible: "Bookmarks"
+
+- runFlow:
+    when:
+      visible: "Tangerine"
+    commands:
+      - tapOn:
+          point: "25%,22%"
+      # Fails loudly if the tap was dropped rather than silently skipping the
+      # removal: RESPECT discards taps that land during a screen transition.
+      - assertVisible: "Remove"
+      - tapOn: "Remove"
+      - extendedWaitUntil:
+          notVisible: "Tangerine"
+          timeout: 15000
+
+# The postcondition 025 relies on to take its navigate branch.
+- assertNotVisible: "Tangerine"

@@ -94,4 +94,20 @@ export interface TangyCachePlugin {
     ipcPackage: string;
     statementsJson: string;
   }): Promise<{ ok: boolean; count: number; result: string }>;
+
+  /**
+   * Take ownership of an xAPI statement batch the WebView cannot deliver itself.
+   *
+   * The batch is written to disk and a connectivity-constrained WorkManager job relays
+   * it to the launcher over IPC, so delivery happens when the network returns — even if
+   * this app has been killed in the meantime. Resolves once the batch is durable, which
+   * is the caller's signal that it may drop its own copy. Queueing the same batch twice
+   * is a no-op (batches are content-addressed).
+   */
+  queueXapiStatements(options: {
+    endpoint: string;
+    auth: string;
+    ipcPackage: string;
+    statementsJson: string;
+  }): Promise<{ ok: boolean; pending: number }>;
 }

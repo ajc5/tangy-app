@@ -1,8 +1,28 @@
 RESPECT test cases - https://github.com/UstadMobile/Respect/wiki/Compatible-app-review-procedure-for-inclusion-in-default-catalog
 1. Login - Login to the Respect server and add the Tangerine app (copy RESPECT manifest link from the Tangerine app).
-2. Browse catalog - Open the Tangerine app in Respect and browse to a form.
-3. Submit a form - Open a Tangerine form in Respect. It should open in the Tangerine app. Submit the form. Uninstall Tangerine app and again open the same form from Respect. It should open in a webview. Submit the form. Check the Tangerine server and Respect server for results.
-4. Use offline - Download a Tangerine form in Respect and disconnect from the internet. Open the form from Respect. It should open in the Tangerine app. Submit the form. Uninstall Tangerine app and again open the same form from Respect. It should open in a webview. Submit the form. Reconnect to the internet. Check the Tangerine server and Respect server for results.
+2. Submit a form:
+    a. Open a Tangerine form in Respect. 
+    b. It should open in the Tangerine app. 
+    c. Submit the form. 
+    d. Check the Tangerine server and Respect server for results sent via xAPI-IPC. 
+    e. Uninstall Tangerine app and again open the same form from Respect. 
+    f. It should open in a webview. 
+    g. Submit the form. 
+    h. Check the Tangerine server and Respect server for results.
+3. Use offline:
+    a. Download a Tangerine form in Respect and disconnect from the internet. 
+    b. Open the form from Respect. 
+    c. It should open in the Tangerine app. 
+    d. Submit the form. 
+    e. Reconnect to the internet and check the Tangerine server and Respect server for results sent via xAPI-IPC. 
+    f. Disconnect from the internet and uninstall the Tangerine app and again open the same form from Respect. 
+    g. It should open in a webview. 
+    h. Submit the form. Reconnect to the internet. 
+    i. Check the Tangerine server and Respect server for results.
+4. Form completion:
+    a. Add a Tangerine form as a task to a Respect assignment. 
+    b. Open, fill and submit the form from Respect. 
+    c. Verify that the task is set to completed in the Respect assignment.
 
 Tangerine Test Cases
 1. Login - Log in and logout. Select last login and username from the dropdowns, then log in. Clear login history from the menu and log out. There should be no saved servers in the login server dropdown.

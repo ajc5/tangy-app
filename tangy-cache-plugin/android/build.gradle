@@ -61,6 +61,10 @@ dependencies {
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
+    // xAPI statement delivery is queued in WorkManager so it is retried when the device
+    // regains connectivity, even if the app was killed before that happened.
+    implementation 'androidx.work:work-runtime-ktx:2.10.0'
+
     // RESPECT / Open Educational Experience Launcher: xAPI-over-IPC client used to relay xAPI
     // statements (generated in the lesson WebView by the form player) back to the launcher that
     // opened the lesson.

@@ -1,0 +1,54 @@
+# R1, phase 2b — confirm the pasted link and add the app to the school.
+#
+# Run immediately after 025 + `adb shell input keyevent 279`. The field must now
+# hold the manifest URL the Tangerine app copied, which is asserted here rather
+# than assumed: that assertion IS the clipboard-handoff test.
+#
+# Requires: nothing (the driver may pass nothing); the URL shape is fixed:
+#   https://<server>/respect-app-manifest/v2?respectToken=<uuid>
+appId: world.respect.app
+---
+- assertVisible: "Enter link"
+
+# The pasted link resolved from the clipboard into the field.
+- assertVisible: ".*respect-app-manifest/v2\\?respectToken=.*"
+
+- tapOn: "Next"
+
+# RESPECT parsed the manifest: the app's own title and its groups are shown.
+- assertVisible: "App detail"
+- assertVisible: "Tangerine"
+- assertVisible: "Group X"
+
+# Add it to the school. 020 cleared the catalog, so this button must be here —
+# without that precondition R1 could pass having added nothing at all.
+- assertVisible: "Add to school apps"
+- tapOn: "Add to school apps"
+
+# Adding does NOT pop the stack: RESPECT stays on the detail screen. 025 pushed
+# Home -> Select app -> Enter link -> App detail, so walk back out. Each tap is
+# guarded by the button being present (this screen's back button is labelled
+# "Back", NOT "Navigate up" as RESPECT's WebView toolbar is), so a build that
+# returns Home by itself is harmless instead of an over-tap that exits the app.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible: "Back"
+          commands:
+            - tapOn: "Back"
+
+# The contract: the app is a tile on the Apps tab. This is only meaningful
+# because 020 removed it first.
+#
+# Anchor on "Bookmarks": it exists only on Home, whereas a bare
+# assertVisible "Tangerine" would also be satisfied by the App detail screen we
+# are standing on - the assertion would then pass having proven nothing about
+# the add.
+- extendedWaitUntil:
+    visible: "Bookmarks"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "Tangerine"
+    timeout: 30000

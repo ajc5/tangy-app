@@ -1,0 +1,37 @@
+# R3 (offline), webview-fallback step — Open + fill + submit, no navigation.
+#
+# The offline twin of 024: same actions, minus the launch/navigate, because the
+# driver parks RESPECT on the detail screen while online (an offline cold start
+# is killed by the system's startup ANR watchdog).
+#
+# Precondition (done by the driver): RESPECT is on the form detail AND the
+# Tangerine app is uninstalled, so "Open" must fall back to RESPECT's WebView.
+appId: world.respect.app
+---
+- assertVisible: "Open"
+- tapOn: "Open"
+
+# The fallback renders the Tangerine player inside RESPECT's own WebView. Its
+# toolbar is "OnlineSurveyApp" + Navigate up / Close; the question is an
+# unlabelled EditText, so it is tapped by point (centre of the field at ~42%).
+# extendedWaitUntil, not assertVisible: offline, that WebView has to pull every
+# asset of the player out of RESPECT's cache before it renders, which on a loaded
+# emulator takes longer than assertVisible's retry window - the flow then reported
+# a dead form when it was merely still loading.
+- extendedWaitUntil:
+    visible: "Submit"
+    timeout: 90000
+- extendedWaitUntil:
+    visible: "OnlineSurveyApp"
+    timeout: 90000
+- tapOn:
+    point: "50%,42%"
+- inputText: "${ANSWER}"
+- hideKeyboard
+
+- tapOn: "Submit"
+
+# The player replaces the item with its submitted state once the response is stored.
+- extendedWaitUntil:
+    notVisible: "Submit"
+    timeout: 60000

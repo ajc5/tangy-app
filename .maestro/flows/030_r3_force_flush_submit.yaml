@@ -1,0 +1,18 @@
+# R3 (offline) — force the queued xAPI statements out.
+#
+# The offline RESPONSE uploads as soon as the app is re-opened (015), but the
+# queued xAPI STATEMENTS are not relayed to RESPECT by the app merely being open:
+# the relay is triggered by a submission. Polling for the LRS POST after only
+# re-opening/resuming therefore times out even though the statements do leave -
+# they leave on the next submit. So the driver does a real submit here.
+#
+# Deliberately minimal: it opens a form and submits it, with no server-count
+# assertions of its own (011 owns those and needs the CouchDB env vars).
+#
+# Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_NAME, FORM_NAME, ANSWER
+appId: org.tangerinecentral.tangerine
+androidWebViewHierarchy: devtools
+---
+- runFlow: "../subflows/ensure_logged_in.yaml"
+- runFlow: "../subflows/open_form.yaml"
+- runFlow: "../subflows/fill_and_submit_form.yaml"

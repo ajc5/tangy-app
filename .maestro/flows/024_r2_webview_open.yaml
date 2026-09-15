@@ -1,0 +1,33 @@
+# R2, phase 2 — the WebView fallback.
+#
+# Also reused verbatim by R3 (offline): the navigation and the submission are
+# identical, only the network state and the pre-download differ.
+#
+# With the Tangerine app NOT installed, RESPECT's LaunchAppUseCase cannot resolve
+# its ACTION_VIEW|REQUIRE_NON_BROWSER intent, so it must fall back to rendering
+# the lesson in its own XapiWebView. This flow only performs the navigation and
+# the Open tap; the driver asserts which path was taken (RESPECT logcat) and the
+# submission result on both servers.
+#
+# Precondition (done by the driver): `adb uninstall org.tangerinecentral.tangerine`
+appId: world.respect.app
+---
+- runFlow: "../subflows/respect_goto_base_form.yaml"
+- tapOn: "Open"
+
+# The fallback renders the Tangerine player inside RESPECT's own WebView. Its
+# toolbar is "OnlineSurveyApp" + Navigate up / Close; the question is an unlabelled
+# EditText, so it is tapped by point (centre of the field at ~42% height).
+- assertVisible: "Submit"
+- assertVisible: "OnlineSurveyApp"
+- tapOn:
+    point: "50%,42%"
+- inputText: "${ANSWER}"
+- hideKeyboard
+
+- tapOn: "Submit"
+
+# The player replaces the item with its submitted state once the response is stored.
+- extendedWaitUntil:
+    notVisible: "Submit"
+    timeout: 60000

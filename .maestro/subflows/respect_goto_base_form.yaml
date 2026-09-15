@@ -1,0 +1,50 @@
+# Navigate RESPECT from Home to the Tangerine "Base Form" learning-unit detail.
+#
+# Shared by the submit (R2) and offline (R3) cases, which then tap "Open" to
+# hand the lesson off to the Tangerine app.
+#
+# (The catalogue's separate "browse catalog" case was dropped as redundant —
+# reaching a form IS this navigation.)
+#
+# Requires: R1 to have added the Tangerine app to the school; GROUP_NAME/FORM_NAME
+# default to the demo school's values.
+#
+# PRECONDITION: R1 has already added the Tangerine app to the school's catalog.
+# R2 and R3 START from that state and never re-run the add.
+#
+# ONLINE ONLY. RESPECT cannot cold-start offline — its startup blocks on network
+# and the system kills it ("ANR in world.respect.app ... failed to complete
+# startup"). The offline halves of R3 therefore park the app here first, while
+# still online, and then do nothing but tap Open once the network is severed.
+appId: world.respect.app
+---
+# stopApp first: launchApp on its own only RESUMES the app, so RESPECT comes
+# back on whatever screen the previous phase left it on - typically the
+# learning-unit detail, where the "Apps" tab does not exist and this subflow
+# fails on its first assertion. A cold start always lands on Home.
+- stopApp
+- launchApp
+
+# extendedWaitUntil, not assertVisible: each of these screens only renders once
+# RESPECT has its data (school -> catalog -> group feed -> form list), so a cold
+# start right after a reconnect (R3) is far slower than a warm one, and offline
+# it waits on a cache read instead. assertVisible's short retry window times out
+# there even though the app is healthy and simply still loading.
+- extendedWaitUntil:
+    visible: "Apps"
+    timeout: 60000
+
+- tapOn: "Tangerine"
+- extendedWaitUntil:
+    visible: "Lessons"
+    timeout: 60000
+
+- tapOn: "Group X"
+- extendedWaitUntil:
+    visible: "Group X - Forms"
+    timeout: 60000
+
+- tapOn: "Base Form"
+
+# The learning-unit detail screen: this is where "Open" (the hand-off) lives.
+- assertVisible: "Open"
