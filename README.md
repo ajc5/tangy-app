@@ -5,6 +5,10 @@ A Capacitor mobile app for collecting data via Tangerine server.
 ## Features
 
 - Two-step login: server URL then credentials
+  - The URL is checked before leaving step 1: a Tangerine server that supports
+    this app answers `/respect-app-manifest` with 200 or 401, so a 404 (not a
+    Tangerine server, or an older version) is rejected with an instruction to
+    enter the correct version.
 - List user's groups
 - List forms per group
 - Open forms in in-app browser (WebView)

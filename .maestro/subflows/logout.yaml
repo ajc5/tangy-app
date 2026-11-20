@@ -3,7 +3,6 @@
 # Assumes the app is signed in and showing a list screen (group or form list).
 # Leaves the app on the credentials step (the server URL is remembered).
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - tapOn: "Menu"
 - tapOn: "Logout"

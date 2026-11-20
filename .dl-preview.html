@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Download button states</title>
+<link rel="stylesheet" href="www/css/styles.css">
+<style>
+  body { font-family: -apple-system, sans-serif; background: #f7f8fa; margin: 0; padding: 20px; }
+  h2 { font-size: 14px; color: #444; margin: 18px 0 6px; }
+  .list-item {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #fff; border-radius: 8px; padding: 10px 12px; margin: 6px 0;
+    box-shadow: 0 1px 2px rgba(0,0,0,.08); max-width: 360px;
+  }
+  .list-item-name { font-size: 14px; color: #222; }
+  .note { font-size: 11px; color: #888; margin: 2px 0 0; max-width: 360px; }
+  /* Cheap stand-in for the app's .refresh-indicator, so results are visible. */
+  .dl-cached { font-size: 13px; }
+</style>
+</head>
+<body>
+  <h2>Group / form row buttons</h2>
+  <div id="rows"></div>
+  <p class="note">Ring over the glyph; stop square only where a tap cancels (cancellable job).</p>
+  <h2>4x scale (busy states only)</h2>
+  <div id="zoom"></div>
+  <style>
+    /* Same markup and proportional geometry, laid out 4x larger so the
+       ring / glyph clearance can be inspected in a screenshot. */
+    #zoom .download-btn { width: 144px; height: 144px; }
+    #zoom .dl-progress { width: 96px; height: 96px; }
+  </style>
+  <script src="www/js/views.js"></script>
+  <script>
+    const specs = [
+      ['Not cached (download)', b => views._setDownloadBtnUncached(b)],
+      ['Uncached + tapping (not cancellable job: ring spins, arrow stays)', b => {
+        b._dlBusy = false; b._dlSignal = null; views._setDownloadBtnBusy(b);
+      }],
+      ['Downloading 0% (stop square, determinate ring)', b => {
+        b._dlSignal = { cancelled: false }; views._setDownloadBtnBusy(b, 0);
+      }],
+      ['Downloading 37%', b => {
+        b._dlBusy = false; b._dlSignal = { cancelled: false }; views._setDownloadBtnBusy(b, 0.37);
+      }],
+      ['Cancelling (ring keeps spinning, stop square stays)', b => {
+        b._dlBusy = false; b._dlSignal = { cancelled: false }; views._setDownloadBtnBusy(b, 0.62);
+        views._cancelDownload(b);
+      }],
+      ['Cached (downloaded)', b => views._setDownloadBtnCached(b)],
+    ];
+    const rows = document.getElementById('rows');
+    specs.forEach(([label, fn]) => {
+      const li = document.createElement('li');
+      li.className = 'list-item';
+      const name = document.createElement('span');
+      name.className = 'list-item-name';
+      name.textContent = label;
+      li.appendChild(name);
+      const btn = document.createElement('button');
+      btn.className = 'download-btn';
+      fn(btn);
+      li.appendChild(btn);
+      rows.appendChild(li);
+    });
+
+    // Same buttons, zoomed, so the ring/glyph clearance can be inspected.
+    const zoom = document.getElementById('zoom');
+    ['download', 'stop-0', 'stop-37'].forEach(kind => {
+      const btn = document.createElement('button');
+      btn.className = 'download-btn';
+      if (kind === 'download') {
+        views._setDownloadBtnUncached(btn);
+      } else {
+        btn._dlSignal = { cancelled: false };
+        views._setDownloadBtnBusy(btn, kind === 'stop-0' ? 0 : 0.37);
+      }
+      btn.style.margin = '8px';
+      zoom.appendChild(btn);
+    });
+  </script>
+</body>
+</html>

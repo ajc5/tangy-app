@@ -5,10 +5,18 @@
 # 026_r1_add_app_confirm.yaml. Pasting for real is what proves the handoff from
 # the Tangerine app's "Copy RESPECT Link".
 #
-# The "+ App" FAB is a clickable View with NO accessible label -> point tap.
+# The "+ App" FAB carries the testTag "floating_action_button" (App.kt), and the
+# link field is reached through its "Link*" label (EnterLinkScreen.kt) - no
+# coordinate taps anywhere in this flow.
+#
+# Deliberately NO `launchApp`: Maestro's launchApp stops the app first, and
+# RESPECT comes back on the NON-ADMIN account after a cold start (see
+# 020_r1_respect_open_apps.yaml). The "+ App" action is admin-only, so a cold
+# start here means no FAB is rendered at all and the tap below fails. This flow
+# must therefore run in the SAME session as 020_r1_respect_open_apps.yaml, which
+# the driver guarantees by running them back-to-back in one R1 attempt.
 appId: world.respect.app
 ---
-- launchApp
 - assertVisible: "Apps"
 
 # Already in the catalog? Then R1 has nothing left to do.
@@ -17,10 +25,17 @@ appId: world.respect.app
       notVisible: "Tangerine"
     commands:
       - tapOn:
-          point: "84%,84%"
-      - assertVisible: "Select app"
+          id: "floating_action_button"
+      # RESPECT's screens all carry the app-bar title as testTag "app_title", so
+      # asserting the title AND text pins the screen unambiguously.
+      - assertVisible:
+          id: "app_title"
+          text: "Select app"
       - tapOn: "Add from Link"
-      - assertVisible: "Enter link"
-      # Focus the "Link*" field so the driver's PASTE lands in it.
-      - tapOn:
-          point: "50%,24%"
+      - assertVisible:
+          id: "app_title"
+          text: "Enter link"
+      # Focus the "Link*" field so the driver's PASTE lands in it. The field is an
+      # unlabelled EditText, so its accessibility handle is the "Link*" label it
+      # renders inside itself - tapping the label lands the caret in the field.
+      - tapOn: "Link*"

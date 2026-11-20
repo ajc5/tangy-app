@@ -1,4 +1,4 @@
-import type { TangyCachePlugin, CacheEntry, PinProgress, CacheStats, OfflineUrl } from './definitions';
+import type { TangyCachePlugin, CacheEntry, CacheInfo, PinProgress, CacheStats, OfflineUrl } from './definitions';
 
 /**
  * Web fallback using an in-memory store (session only).
@@ -34,6 +34,28 @@ export class TangyCacheWeb implements TangyCachePlugin {
 
   async isCached(options: { url: string }): Promise<{ cached: boolean }> {
     return { cached: this._entries.has(options.url) };
+  }
+
+  async getCacheInfo(options: {
+    urls?: string[];
+    url?: string;
+  }): Promise<{ entries: CacheInfo[] }> {
+    const urls = options.urls || (options.url ? [options.url] : []);
+    return {
+      entries: urls.map(url => {
+        const entry = this._entries.get(url);
+        return {
+          url,
+          cached: !!entry,
+          storedAt: 0,
+          sizeBytes: entry ? entry.body.length : 0,
+          etag: '',
+          lastModified: '',
+          cacheControl: '',
+          serverDate: '',
+        };
+      }),
+    };
   }
 
   async evict(options: { urls: string[] }): Promise<{ removed: number }> {
@@ -79,6 +101,29 @@ export class TangyCacheWeb implements TangyCachePlugin {
         transferred: 0,
       },
     };
+  }
+
+  /**
+   * Web fallback: nothing is ever queued. In the browser the form posts straight
+   * to the server and a failed POST is the page's own problem — only the native
+   * plugin owns a durable queue on disk.
+   */
+  async getPendingCount(): Promise<{ count: number }> {
+    return { count: 0 };
+  }
+
+  async syncPending(): Promise<{
+    synced: number;
+    failed: number;
+    xapiSynced: number;
+    remaining: number;
+    skipped: boolean;
+  }> {
+    return { synced: 0, failed: 0, xapiSynced: 0, remaining: 0, skipped: false };
+  }
+
+  async clearPending(): Promise<void> {
+    // Nothing to discard — see getPendingCount().
   }
 
   async getStats(): Promise<{ stats: CacheStats }> {

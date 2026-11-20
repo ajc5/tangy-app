@@ -10,7 +10,6 @@
 #
 # Assumes the calling flow has already launched the app.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 # Force a fresh start. `launchApp` alone only resumes the existing activity, so a
 # form overlay left open by a previous flow would still be covering the shell

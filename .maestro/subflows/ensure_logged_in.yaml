@@ -5,7 +5,6 @@
 #
 # Requires: SERVER_URL, USERNAME, PASSWORD (only if the session was lost).
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 # Fresh process, so no stale form overlay is covering the shell.
 - stopApp

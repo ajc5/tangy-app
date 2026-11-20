@@ -1,6 +1,6 @@
-# Server URL step rejects an empty or whitespace-only URL and stays on step 1.
+# Server URL step rejects an empty, whitespace-only, malformed or unreachable
+# URL, staying on step 1 with an explanatory message.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - launchApp:
     clearState: true
@@ -8,6 +8,23 @@ androidWebViewHierarchy: devtools
 - extendedWaitUntil:
     visible: "Enter your server URL"
     timeout: 30000
+
+# With nothing remembered the field is prefilled with the demo server URL, so
+# empty it first: the right edge of the field is its clear (X) button, and the
+# eraseText covers the case where the tap only placed the caret.
+- tapOn:
+    id: "server-url"
+    point: "95%,50%"
+- eraseText: 200
+
+# Clearing keeps the field focused, which opens the suggestion list over the
+# Connect button — blur it before tapping Connect, or the tap would land on the
+# demo-server suggestion.
+- tapOn: "Enter your server URL"
+- extendedWaitUntil:
+    notVisible:
+      id: "server-suggest-list"
+    timeout: 5000
 
 # Empty -> rejected.
 - tapOn:
@@ -29,6 +46,43 @@ androidWebViewHierarchy: devtools
 - assertVisible: "Please enter a server URL."
 
 # Still on step 1 — no credentials screen was reached.
+- assertNotVisible: "Server:"
+- assertNotVisible:
+    id: "login-btn"
+
+# Syntactically invalid URL -> rejected without any network call.
+- tapOn:
+    id: "server-url"
+    point: "95%,50%"
+- eraseText: 200
+- inputText: "not-a-url"
+- tapOn: "Enter your server URL"
+- extendedWaitUntil:
+    notVisible:
+      id: "server-suggest-list"
+    timeout: 5000
+- tapOn:
+    id: "connect-btn"
+- assertVisible: "Please enter a valid URL, e.g. https://your-server.com."
+- assertNotVisible: "Server:"
+
+# Unreachable server (nothing listens on port 9) -> connection error, not a
+# silent pass to the credentials screen.
+- tapOn:
+    id: "server-url"
+    point: "95%,50%"
+- eraseText: 200
+- inputText: "http://127.0.0.1:9"
+- tapOn: "Enter your server URL"
+- extendedWaitUntil:
+    notVisible:
+      id: "server-suggest-list"
+    timeout: 5000
+- tapOn:
+    id: "connect-btn"
+- extendedWaitUntil:
+    visible: "Could not reach this server. Check the URL and your connection, then try again."
+    timeout: 20000
 - assertNotVisible: "Server:"
 - assertNotVisible:
     id: "login-btn"

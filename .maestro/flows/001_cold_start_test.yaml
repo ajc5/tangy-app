@@ -1,7 +1,6 @@
 # Smoke test: a clean launch restores no session and lands on the login
 # (server URL) screen.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - launchApp:
     clearState: true
@@ -15,7 +14,20 @@ androidWebViewHierarchy: devtools
 - assertVisible: "Enter your server URL"
 - assertNotVisible: "Groups"
 
-# Focusing the empty server field offers the built-in demo server.
+# With no remembered server the field is prefilled with the demo URL and offers
+# its clear (X) button. The header pill describes the field, so it reads DEMO
+# MODE while the demo URL is in it (nothing is connected until Connect is pulled).
+- assertVisible: "https://tangy.is-local.host"
+- assertVisible: "Clear server URL"
+- assertVisible: "DEMO MODE"
+
+# Clearing the field takes the pill away instead of leaving it claiming demo
+# mode for an empty field.
+- tapOn:
+    id: "clear-server-url"
+- assertNotVisible: "DEMO MODE"
+
+# Focusing the field still offers the built-in demo server.
 - tapOn:
     id: "server-url"
 - assertVisible: "https://tangy.is-local.host"

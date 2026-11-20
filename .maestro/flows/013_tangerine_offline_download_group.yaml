@@ -2,7 +2,6 @@
 #
 # Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_ID
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 # Start from wiped app data so the pin is a genuine Download -> Downloaded
 # transition (an already-cached group would just skip the download).

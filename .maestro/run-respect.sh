@@ -37,8 +37,8 @@ fi
 
 CASE="${1:-all}"
 case "$CASE" in
-  r1|r2|r3|all) ;;
-  *) echo "usage: $0 [r1|r2|r3|all]" >&2; exit 2 ;;
+  r1|r2|r3|r4|all) ;;
+  *) echo "usage: $0 [r1|r2|r3|r4|all]" >&2; exit 2 ;;
 esac
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -53,9 +53,23 @@ GROUP_DB="${GROUP_DB:-$GROUP_ID}"
 COUCH_USER="${COUCH_USER:-admin}"
 COUCH_PASSWORD="${COUCH_PASSWORD:-password}"
 
+# R4 only. The assignment that already carries the Tangerine form as its single
+# task, and how many students it was assigned to (the driver asserts the
+# "Completed (N)" filter chip on that assignment's detail screen).
+ASSIGNMENT_NAME="${ASSIGNMENT_NAME:-lesson 1}"
+ASSIGNMENT_STUDENT_COUNT="${ASSIGNMENT_STUDENT_COUNT:-1}"
+# R4's task is its OWN Tangerine form - distinct from the R2/R3 one - so the
+# response oracle needs its group/form explicitly (see count_responses).
+R4_GROUP_ID="${R4_GROUP_ID:-group-3d8cc8b0-2c36-4dd3-805f-03f230c5c16d}"
+R4_FORM_ID="${R4_FORM_ID:-form-1b5187d5-5cdc-4c74-80a9-151fe042f886}"
+
 DEVICE="${ADB_DEVICE:-emulator-5554}"
 TANGY_PKG="${TANGY_PKG:-org.tangerinecentral.tangerine}"
 RESPECT_PKG="${RESPECT_PKG:-world.respect.app}"
+# Display name of the school-admin account as RESPECT's Accounts screen shows it.
+# R1 needs it: `canRemove` is driven by the selected person's role, so a non-admin
+# gets a tile menu with no "Remove" (see 019_r1_respect_ensure_admin.yaml).
+RESPECT_ADMIN_ACCOUNT="${RESPECT_ADMIN_ACCOUNT:-Admin Admin}"
 APK="${APK:-android/app/build/outputs/apk/debug/app-debug.apk}"
 LOGCAT_FILE="${LOGCAT_FILE:-/tmp/respect-logcat.txt}"
 UPLOAD_TIMEOUT="${UPLOAD_TIMEOUT:-120}"
@@ -84,7 +98,10 @@ RUN_ID="$(date +%s)"
 ME=(maestro test
   -e "SERVER_URL=$SERVER_URL" -e "USERNAME=$USERNAME" -e "PASSWORD=$PASSWORD"
   -e "GROUP_NAME=$GROUP_NAME" -e "FORM_NAME=$FORM_NAME"
-  -e "GROUP_ID=$GROUP_ID" -e "FORM_ID=$FORM_ID")
+  -e "GROUP_ID=$GROUP_ID" -e "FORM_ID=$FORM_ID"
+  -e "ASSIGNMENT_NAME=$ASSIGNMENT_NAME"
+  -e "ASSIGNMENT_STUDENT_COUNT=$ASSIGNMENT_STUDENT_COUNT"
+  -e "RESPECT_ADMIN_ACCOUNT=$RESPECT_ADMIN_ACCOUNT")
 
 PASS=0
 FAIL=0
@@ -119,6 +136,35 @@ wait_online() {
 }
 
 installed() { [ "$(adb_ shell pm list packages 2>/dev/null | grep -c "$TANGY_PKG")" != "0" ]; }
+
+# Open an app tile's overflow menu (the 3-dot that carries "Remove").
+#
+# RESPECT renders that button as a Compose IconButton whose Icon has
+# contentDescription = "" and which has no testTag, so the accessibility tree
+# exposes it as a clickable node with no id, no text and no description - there
+# is nothing for a selector to match, and Maestro's relative selectors all need
+# some named node to anchor on. Nothing outside the UI can un-add an app either:
+# RESPECT persists the school's catalog on its own server, so `pm clear` does not
+# touch it and only this menu's "Remove" does.
+#
+# So the point is DERIVED from the accessibility tree (title -> enclosing
+# clickable tile -> smallest clickable node inside it) rather than hard-coded.
+# See .maestro/scripts/tile_overflow_point.py.
+#
+# returns 0 = tapped, 2 = tile (or its overflow) not on screen, 1 = could not read the tree
+TILE_OVERFLOW_DUMP="${TILE_OVERFLOW_DUMP:-/tmp/respect-tile-overflow.xml}"
+tap_tile_overflow() {
+  local title="$1" point rc
+  adb_ shell uiautomator dump /sdcard/respect-ui.xml >/dev/null 2>&1 || return 1
+  adb_ shell cat /sdcard/respect-ui.xml > "$TILE_OVERFLOW_DUMP" 2>/dev/null || return 1
+  [ -s "$TILE_OVERFLOW_DUMP" ] || return 1
+  point="$(python3 .maestro/scripts/tile_overflow_point.py "$TILE_OVERFLOW_DUMP" "$title" 2>/dev/null)"
+  rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf '  (tile overflow point derived from the accessibility tree: %s)\n' "$point"
+  # shellcheck disable=SC2086  # $point is exactly "x y"
+  adb_ shell input tap $point >/dev/null 2>&1
+}
 
 install_tangy() {
   installed && return 0
@@ -208,11 +254,16 @@ trap cleanup EXIT
 # ── Tangerine server oracle (its own CouchDB, proxied at <server>/db/) ────────
 # The optional marker must appear in the response doc, which proves the counted
 # doc is the submission this phase just made rather than a pre-existing one.
+#
+# Optional 2nd/3rd args override the group and form: R4's assignment task is a
+# DIFFERENT Tangerine form from the one R2/R3 submit, so counting R4 against
+# FORM_ID silently looked in the wrong database and reported "never arrived"
+# for a submission that had in fact uploaded.
 count_responses() {
-  local body marker="${1:-}"
+  local body marker="${1:-}" group_db="${2:-$GROUP_DB}" form_id="${3:-$FORM_ID}"
   body="$(curl -sk -m 20 -u "$COUCH_USER:$COUCH_PASSWORD" \
-    "$SERVER_URL/db/$GROUP_DB/_all_docs?include_docs=true&limit=2000" 2>/dev/null)" || return 1
-  printf '%s' "$body" | FORM_ID="$FORM_ID" MARKER="$marker" python3 -c '
+    "$SERVER_URL/db/$group_db/_all_docs?include_docs=true&limit=2000" 2>/dev/null)" || return 1
+  printf '%s' "$body" | FORM_ID="$form_id" MARKER="$marker" python3 -c '
 import json, os, sys
 try:
     rows = json.load(sys.stdin).get("rows", [])
@@ -246,8 +297,9 @@ run_flow() {
 # Poll the Tangerine oracle until it holds $1 matching responses.
 wait_for_responses() {
   local want="$1" marker="$2" timeout="${3:-$UPLOAD_TIMEOUT}" got=""
+  local group_db="${4:-$GROUP_DB}" form_id="${5:-$FORM_ID}"
   for _ in $(seq 1 "$timeout"); do
-    got="$(count_responses "$marker")"
+    got="$(count_responses "$marker" "$group_db" "$form_id")"
     [ "$got" = "$want" ] && { echo "$got"; return 0; }
     sleep 1
   done
@@ -283,16 +335,45 @@ echo "  (run id $RUN_ID; every assertion below matches on that marker)"
 start_logcat_capture
 ok "capturing device logs to $LOGCAT_FILE"
 
+# RESPECT has to be signed in as a SCHOOL ADMIN before anything else: R1's
+# clear-the-catalog step is offered only to admins (`canRemove = person.isAdmin()`
+# in RESPECT), so a non-admin account gets a tile menu with no "Remove" and R1
+# fails looking like a test bug. Selecting the account needs no password - the
+# credentials are already stored on the device - and 020a does it together with
+# landing on Home, because RESPECT reverts to the other account on a cold start.
+step "Phase 0b — RESPECT on Home with the school admin account ($RESPECT_ADMIN_ACCOUNT)"
+if run_flow .maestro/flows/020_r1_respect_open_apps.yaml; then
+  ok "RESPECT is on Home with the admin account selected"
+else
+  bad "could not select the RESPECT admin account ($RESPECT_ADMIN_ACCOUNT)"
+  exit 1
+fi
+
 # ── R1: login + add the app from the copied link ─────────────────────────────
 if [ "$CASE" = "r1" ] || [ "$CASE" = "all" ]; then
   step "R1 — copy the RESPECT manifest link, then add the app in RESPECT"
 
   # 1. Tangerine copies its own manifest link (must exercise the app's feature).
-  if run_flow .maestro/flows/021_r1_tangerine_copy_link.yaml; then
+  #
+  # Retried: 021 opens with `tapOn: "Menu"`, and that tap is DISCARDED if it
+  # lands while the freshly (re)launched WebView is still rendering - the flow
+  # then fails its "Copy RESPECT Link" assertion BEFORE the tap that actually
+  # writes the clipboard. A single lost tap used to take the whole of R1 down
+  # (nothing got added, and it surfaced as "manifest rejected"). Re-tapping the
+  # burger is safe: the copy is idempotent and nothing downstream has run yet.
+  COPIED=false
+  for attempt in 1 2 3; do
+    if run_flow .maestro/flows/021_r1_tangerine_copy_link.yaml; then
+      COPIED=true
+      break
+    fi
+    printf '  \033[33mNOTE\033[0m copy-link attempt %s failed; retrying\n' "$attempt"
+  done
+  if $COPIED; then
     ok "Tangerine copied the RESPECT manifest link to the clipboard"
-  else
-    bad "copy-link phase failed"
   fi
+  # A failure is reported by the block at the end of R1, so that "nothing was
+  # added" and "the copy never happened" stay distinguishable.
 
   # 2. Clear the catalog, paste the link into RESPECT, confirm the add.
   #
@@ -306,18 +387,47 @@ if [ "$CASE" = "r1" ] || [ "$CASE" = "all" ]; then
   mark_log
   ADDED=false
   for attempt in 1 2; do
+    # Nothing to add if the copy never happened: the clipboard would still hold
+    # a previous run's link, so the paste below would produce a false pass for
+    # the very feature R1 exists to test. Break out and let R1's closing report
+    # name the real cause.
+    $COPIED || break
+
     # RESPECT persists the apps added to a school, and 025 short-circuits when
     # Tangerine is already in the catalog - so on every run after the first the
     # add was skipped and R1 stopped testing the clipboard handoff at all while
-    # still reporting success. Clear the entry first so the add is real. The
-    # overflow menu is reached by point: its 3-dot carries no text and no
-    # contentDescription, and RESPECT drops taps that land mid-transition.
-    if run_flow .maestro/flows/020_r1_respect_remove_app.yaml; then
-      ok "Tangerine cleared from RESPECT's catalog - the add below is exercised for real"
-    else
-      printf '  \033[33mNOTE\033[0m clear-catalog attempt %s failed; retrying\n' "$attempt"
+    # still reporting success. Clear the entry first so the add is real.
+    #
+    # Three steps, because the only affordance is a tile overflow button that the
+    # accessibility tree exposes with no id/label (see tap_tile_overflow):
+    #   020a selects the admin account AND lands on Home -> the driver taps the
+    #   overflow -> 020b taps Remove. All three must share ONE session: RESPECT
+    #   reverts to the non-admin account on a cold start, and without the admin
+    #   role the tile menu has no Remove item at all.
+    if ! run_flow .maestro/flows/020_r1_respect_open_apps.yaml; then
+      printf '  \033[33mNOTE\033[0m could not reach RESPECT Home (attempt %s); retrying\n' "$attempt"
       continue
     fi
+
+    tap_tile_overflow "Tangerine"
+    case "$?" in
+      0)
+        if run_flow .maestro/flows/020_r1_respect_remove_app.yaml; then
+          ok "Tangerine cleared from RESPECT's catalog - the add below is exercised for real"
+        else
+          printf '  \033[33mNOTE\033[0m clear-catalog attempt %s failed; retrying\n' "$attempt"
+          continue
+        fi
+        ;;
+      2)
+        # Already absent. No tile menu is open in that state, so 020b's "Remove"
+        # assertion cannot pass - it used to fail here unconditionally, turning
+        # "nothing to remove" into a phantom add failure.
+        printf '  \033[33mNOTE\033[0m Tangerine is not in RESPECT'"'"'s catalog; nothing to remove\n'
+        ;;
+      *) printf '  \033[33mNOTE\033[0m could not read RESPECT'"'"'s accessibility tree; retrying\n'
+         continue ;;
+    esac
 
     # 025's navigate branch only runs when Tangerine is absent from the catalog,
     # which the line above has just guaranteed - so reaching "Enter link" here is
@@ -345,9 +455,12 @@ if [ "$CASE" = "r1" ] || [ "$CASE" = "all" ]; then
   done
 
   if ! $ADDED; then
-    # Separate "RESPECT died" from "the link was rejected": reporting the second
-    # for the first is how a device hiccup gets mistaken for a product defect.
-    if [ "$(log_count 'Force finishing activity world.respect.app')" -ge 1 ] \
+    # Separate "the copy never happened" and "RESPECT died" from "the link was
+    # rejected": blaming the link for either is how a device hiccup gets
+    # mistaken for a product defect.
+    if ! $COPIED; then
+      bad "copy-link phase failed - the add was skipped (pasting would have used a stale clipboard)"
+    elif [ "$(log_count 'Force finishing activity world.respect.app')" -ge 1 ] \
     || [ "$(log_count 'ANR in world.respect.app')" -ge 1 ]; then
       bad "RESPECT was killed by the system during the add (ANR / force-finish in the log); the app under test is not implicated - rerun"
     else
@@ -718,6 +831,89 @@ if [ "$CASE" = "r3" ] || [ "$CASE" = "all" ]; then
     ok "RESPECT side: xAPI statements POSTed to the school LRS (HTTP 200)"
   else
     bad "RESPECT side: no xAPI POST/200 captured for the webview submission"
+  fi
+fi
+
+# ── R4: a Tangerine form completed as a RESPECT assignment task ──────────────
+# Catalogue case 4: "Add a Tangerine form as a task to a Respect assignment ->
+# open, fill and submit the form from Respect -> verify that the task is set to
+# completed in the Respect assignment".
+#
+# Step (a) is a PRECONDITION here, not an automated step: creating an assignment
+# requires a RESPECT teacher/admin login (the "Assign" quick action on a
+# learning unit is gated on person.isAdminOrTeacher()) and the E2E account is a
+# student, so an assignment whose task is the Tangerine form must already exist.
+# Set ASSIGNMENT_NAME to it.
+#
+# The launch path is the point of the case: the lesson must be opened FROM the
+# assignment, because RESPECT puts its assignment activity id in the launch URL
+# and the app echoes it back in contextActivities.grouping - which is exactly what
+# RESPECT's assignment completion query filters on. Opening the same form from
+# Apps -> Tangerine submits fine but never counts.
+if [ "$CASE" = "r4" ] || [ "$CASE" = "all" ]; then
+  R4_APP="respect-r4-app-$RUN_ID"
+
+  step "R4 phase 1 — open the assignment's Tangerine task in RESPECT"
+  install_tangy || exit 1
+  mark_log
+  if run_flow .maestro/flows/040_r4_open_assignment_task.yaml; then
+    ok "RESPECT opened assignment '$ASSIGNMENT_NAME' and its Tangerine task"
+  else
+    bad "could not open the assignment task in RESPECT (does '$ASSIGNMENT_NAME' exist?)"
+    exit 1
+  fi
+
+  step "R4 phase 2 — tap Open (handoff to the app), then submit the form"
+  if run_flow .maestro/flows/028_r3_respect_open_only.yaml; then
+    ok "RESPECT tapped Open on the assignment's task"
+  else
+    bad "the Open tap on the assignment task failed"
+  fi
+
+  # Same handoff evidence as R2: RESPECT logs the intent it fired, and the
+  # focused window proves the app (not RESPECT's WebView) came to the front.
+  if [ "$(log_count 'launched native app using intent')" -ge 1 ]; then
+    ok "the assignment's Open handed the lesson off to the Tangerine app"
+  else
+    bad "RESPECT did not hand the assignment task off to the app"
+  fi
+
+  APP_FOCUSED=false
+  for _ in $(seq 1 15); do
+    if adb_ shell dumpsys window 2>/dev/null | grep -q "mCurrentFocus=.*$TANGY_PKG"; then
+      APP_FOCUSED=true
+      break
+    fi
+    sleep 1
+  done
+  if $APP_FOCUSED; then
+    ok "the form is open in the Tangerine app"
+  else
+    bad "the Tangerine app never took focus after the hand-off"
+  fi
+
+  if run_flow .maestro/flows/022_r2_submit_via_app.yaml "$R4_APP"; then
+    ok "form filled and submitted inside the app"
+  else
+    bad "R4 submit-in-app phase failed"
+  fi
+
+  # The submission is the same upload path as R2, so the Tangerine server must
+  # have gained exactly this phase's response - counted against the ASSIGNMENT
+  # TASK's own group/form, which is not the R2/R3 form.
+  if [ "$(wait_for_responses "1" "$R4_APP" "$UPLOAD_TIMEOUT" "$R4_GROUP_ID" "$R4_FORM_ID")" = "1" ]; then
+    ok "Tangerine server received the assignment task response ($R4_FORM_ID)"
+  else
+    bad "the submitted response never reached the Tangerine server ($R4_FORM_ID)"
+  fi
+
+  step "R4 phase 3 — the assignment must count the task as completed"
+  # Polled inside the flow (up to 180s): RESPECT posts the statements it took
+  # over IPC when it next can, so the completion lands well after the submission.
+  if run_flow .maestro/flows/041_r4_assert_assignment_completed.yaml; then
+    ok "RESPECT now reports the task completed (Completed ($ASSIGNMENT_STUDENT_COUNT))"
+  else
+    bad "the assignment still does not count the task as completed"
   fi
 fi
 

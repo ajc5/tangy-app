@@ -41,3 +41,7 @@ api-calls.txt
 tangy-cache-plugin/dist/
 tangy-cache-plugin/android/build/
 tangy-cache-plugin/android/.gradle/
+# Android signing material — never commit
+*.jks
+*.keystore
+keystore.properties

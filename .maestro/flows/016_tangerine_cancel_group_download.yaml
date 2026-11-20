@@ -6,7 +6,6 @@
 #
 # Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_ID
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "../subflows/ensure_logged_in.yaml"
 

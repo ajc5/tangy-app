@@ -44,7 +44,7 @@ class CacheService {
    * @param {{cancelled: boolean}} [signal] Cooperative cancel flag: checked
    *   before each request, so a cancel takes effect within one request.
    */
-  async downloadAndRetain(urls, onProgress, signal) {
+  async downloadAndRetain(urls, onProgress, signal, { force = false } = {}) {
     await this.init();
     const jobId = `pin-${Date.now()}`;
     const results = { jobId, cached: 0, failed: 0, cancelled: false, urls: [] };
@@ -57,9 +57,11 @@ class CacheService {
         break;
       }
       try {
-        const resp = await httpClient.get(url, {
-          'Authorization': localStorage.getItem('token'),
-        });
+        // `force` asks the native cache to bypass a still-fresh copy, so an
+        // update really fetches the new bytes instead of a disk hit.
+        const headers = { 'Authorization': localStorage.getItem('token') };
+        if (force) headers['X-Tangy-Refresh'] = '1';
+        const resp = await httpClient.get(url, headers);
         if (resp.ok) {
           results.cached++;
           results.urls.push(url);

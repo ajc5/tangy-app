@@ -1,29 +1,42 @@
 # R1, phase 2b — confirm the pasted link and add the app to the school.
 #
-# Run immediately after 025 + `adb shell input keyevent 279`. The field must now
-# hold the manifest URL the Tangerine app copied, which is asserted here rather
-# than assumed: that assertion IS the clipboard-handoff test.
+# Run immediately after 025 + `adb shell input keyevent 279`, which pastes the
+# manifest URL the Tangerine app copied into the focused Link field.
 #
-# Requires: nothing (the driver may pass nothing); the URL shape is fixed:
+# The field's CONTENT is deliberately not asserted: it is a WebView EditText and
+# Chromium does not expose an input's value through the Android accessibility
+# tree, so a text assertion on it can never match (verified: the node reports
+# text='' while the field is visibly populated - same as the login fields). The
+# clipboard handoff is proven downstream instead - tapping Next with an empty or
+# garbage value cannot produce the parsed "App detail" screen asserted below.
+#
+# Requires: nothing (the driver may pass nothing); the URL shape is:
 #   https://<server>/respect-app-manifest/v2?respectToken=<uuid>
 appId: world.respect.app
 ---
 - assertVisible: "Enter link"
 
-# The pasted link resolved from the clipboard into the field.
-- assertVisible: ".*respect-app-manifest/v2\\?respectToken=.*"
-
+# Let the paste settle before tapping through (see the header note on why the
+# field's value itself cannot be asserted).
+- waitForAnimationToEnd
 - tapOn: "Next"
 
 # RESPECT parsed the manifest: the app's own title and its groups are shown.
-- assertVisible: "App detail"
+# "App detail" is the app-bar title, exposed as the testTag "app_title".
+- assertVisible:
+    id: "app_title"
+    text: "App detail"
 - assertVisible: "Tangerine"
 - assertVisible: "Group X"
 
 # Add it to the school. 020 cleared the catalog, so this button must be here —
 # without that precondition R1 could pass having added nothing at all.
-- assertVisible: "Add to school apps"
-- tapOn: "Add to school apps"
+# Both labels RESPECT has shipped for this button are accepted: the installed
+# build renders "+ Add to school apps" (the leading "+" is part of the rendered
+# text), while the build these flows were originally written against used
+# "Add App". Matched case-insensitively with the "+"/whitespace optional.
+- assertVisible: '(?i)^\+?\s*add( app| to school apps)$'
+- tapOn: '(?i)^\+?\s*add( app| to school apps)$'
 
 # Adding does NOT pop the stack: RESPECT stays on the detail screen. 025 pushed
 # Home -> Select app -> Enter link -> App detail, so walk back out. Each tap is

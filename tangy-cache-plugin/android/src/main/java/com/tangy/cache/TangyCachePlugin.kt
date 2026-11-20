@@ -2,20 +2,30 @@ package com.tangy.cache
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ImageView
+import android.widget.ProgressBar
 import android.widget.TextView
 
 import android.Manifest
@@ -41,6 +51,7 @@ import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -100,6 +111,13 @@ class TangyCachePlugin : Plugin() {
     private val scope = CoroutineScope(Dispatchers.IO)
     private val pinJobs = ConcurrentHashMap<String, PinJob>()
 
+    // Serialises drains of the offline submission queue. The connectivity
+    // callback (auto-upload on reconnect) and the menu's "Upload Responses"
+    // action can fire at any moment, and a response POSTed twice is a duplicate
+    // record on the server. Together with the per-file `.sending` rename in
+    // claimPending() this makes every submission at-most-once.
+    private val pendingDrainLock = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // URLs with a background cache-refresh already in flight (dedupes the
     // fire-and-forget refreshes kicked off from shouldInterceptRequest so a
     // repeated open never piles up duplicate network calls for one resource).
@@ -135,6 +153,16 @@ class TangyCachePlugin : Plugin() {
     private var currentRespectLaunch: Boolean = false
     private var currentIpcPackage: String? = null
     private var cachedWebViewBackCallback: OnBackPressedCallback? = null
+
+    // ── Overlay loading state ────────────────────────────────────────────────
+    // The overlay's WebView paints its default white background until the form
+    // document AND its Angular bundles have loaded, which on a slow or
+    // unreachable host looks exactly like a hang. A spinner panel covers that
+    // window (see buildOverlayLoadingView / scheduleOverlayLoading).
+    private var currentLoadingView: View? = null
+    private var overlayContentFrame: FrameLayout? = null
+    private var pendingLoadingShow: Runnable? = null
+    private var overlayPageLoading: Boolean = false
 
     private val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -262,6 +290,95 @@ class TangyCachePlugin : Plugin() {
         }
     }
 
+    // ── Cache validation helpers (ETag / Last-Modified / Cache-Control) ──
+
+    /** Read just the metadata sidecar (headers, storedAt, size) — no body I/O. */
+    private fun readMeta(url: String): CacheMeta? {
+        val metaFile = File(metaDir(), "${urlToFilename(url)}.json")
+        if (!metaFile.exists()) return null
+        return try {
+            gson.fromJson(metaFile.readText(Charsets.UTF_8), CacheMeta::class.java)
+        } catch (e: Exception) {
+            Log.w(TAG, "readMeta failed for $url: ${e.message}")
+            null
+        }
+    }
+
+    /** Header lookup is case-insensitive: OkHttp preserves the origin casing. */
+    private fun metaHeader(meta: CacheMeta, name: String): String? =
+        meta.headers.entries
+            .firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value
+
+    /**
+     * Freshness lifetime from `Cache-Control: max-age`, in ms.
+     *
+     * Null when the response carries no max-age, or explicitly forbids reuse
+     * (`no-store` / `no-cache`). Those must always go back to the server.
+     */
+    private fun maxAgeMillis(meta: CacheMeta): Long? {
+        val cc = metaHeader(meta, "Cache-Control") ?: return null
+        if (cc.contains("no-store", ignoreCase = true) ||
+            cc.contains("no-cache", ignoreCase = true)
+        ) return null
+        val match = Regex("(?:^|,)\\s*max-age\\s*=\\s*(\\d+)", RegexOption.IGNORE_CASE)
+            .find(cc) ?: return null
+        return match.groupValues[1].toLongOrNull()?.times(1000)
+    }
+
+    private fun isNoStore(meta: CacheMeta): Boolean =
+        metaHeader(meta, "Cache-Control")?.contains("no-store", ignoreCase = true) == true
+
+    /**
+     * Build a 200 response from a stored copy. Bodies are returned untouched;
+     * Content-Length/Content-Encoding are dropped because OkHttp may have
+     * transparently decompressed the bytes we saved, so the origin's values can
+     * disagree with what we are about to hand back.
+     */
+    private fun cachedResponse(
+        request: Request,
+        bytes: ByteArray,
+        meta: CacheMeta,
+        cacheState: String,
+    ): Response {
+        val rebuilt = Response.Builder()
+            .request(request)
+            .protocol(okhttp3.Protocol.HTTP_1_1)
+            .code(200)
+            .message("OK (cache)")
+            .header("X-Cache", cacheState)
+        meta.headers.forEach { (name, value) ->
+            if (name.equals("Content-Length", true) ||
+                name.equals("Content-Encoding", true) ||
+                name.equals("Transfer-Encoding", true)
+            ) return@forEach
+            rebuilt.header(name, value)
+        }
+        rebuilt.body(bytes.toResponseBody(meta.mimeType.toMediaType()))
+        return rebuilt.build()
+    }
+
+    /**
+     * A 304 means the stored copy is still current: merge the validator/cache
+     * headers the server just sent (they may have refreshed Cache-Control, Age
+     * or ETag) and restart the max-age clock, so the next request inside the
+     * window needs no network at all.
+     */
+    private fun touchMeta(url: String, meta: CacheMeta, response: Response): CacheMeta {
+        val merged = meta.headers.toMutableMap()
+        response.headers.names().forEach { name ->
+            response.headers[name]?.let { merged[name] = it }
+        }
+        val updated = meta.copy(headers = merged, storedAt = System.currentTimeMillis())
+        try {
+            File(metaDir(), "${urlToFilename(url)}.json")
+                .writeText(gson.toJson(updated), Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.w(TAG, "touchMeta failed for $url: ${e.message}")
+        }
+        return updated
+    }
+
     // True when the device currently has an active network (any type). Used to
     // skip the network attempt when fully offline (airplane mode / radios off),
     // which avoids DNS/connect stalls that otherwise delay cached content for
@@ -333,28 +450,97 @@ class TangyCachePlugin : Plugin() {
                 return chain.proceed(request)
             }
 
+            // A "force" request (sync button / explicit refresh) must reach the
+            // server even if our copy is still inside its max-age window. A
+            // "probe" request wants the current bytes for comparison but must
+            // NOT replace the cached copy — a staleness check must never mutate
+            // what it is measuring. Both markers are stripped here so they
+            // never reach the origin.
+            val forceRefresh = request.header(HEADER_FORCE_REFRESH) != null
+            val noStoreProbe = request.header(HEADER_NO_STORE) != null
+            val cleanRequest = if (forceRefresh || noStoreProbe) {
+                request.newBuilder()
+                    .removeHeader(HEADER_FORCE_REFRESH)
+                    .removeHeader(HEADER_NO_STORE)
+                    .build()
+            } else {
+                request
+            }
+
             // Truly offline (no active network at all — airplane mode / radios
             // off): don't attempt a connection. Serving straight from disk
             // avoids the DNS/connect stalls that make the FIRST offline load of
             // a cached page take 20-30s (or hang) before falling back to cache.
-            // When ANY network is present we stay network-first below so API and
-            // feed data never goes stale.
             if (!hasActiveNetwork()) {
                 Log.d(TAG, "CacheInterceptor OFFLINE_FASTPATH $url — no active network")
-                serveFromDiskOrRespect(request)?.let { return it }
+                serveFromDiskOrRespect(cleanRequest)?.let { return it }
                 throw IOException("Offline (no active network) and not cached: $url")
             }
 
-            // Network-first: always try the network when online so we get
-            // FRESH data (group/form lists, OPDS feeds, form HTML). The disk
-            // cache is used as an OFFLINE fallback (and for manual pins).
-            // This prevents stale responses — e.g. a group that no longer
-            // exists, or an empty form list — from being served forever.
-            Log.d(TAG, "CacheInterceptor FETCH $url — trying network")
-            return try {
-                val networkResponse = chain.proceed(request)
+            // Note: a forced request still uses the stored validators below. It
+            // only skips the freshness shortcut — so "check now" costs a
+            // conditional GET (usually 304), not a full body download.
+            val meta = readMeta(url)
 
-                if (networkResponse.isSuccessful && networkResponse.body != null) {
+            // 1. Still fresh per the server's Cache-Control: max-age — no
+            //    request at all. This is where the Tangerine catalogs (10s) and
+            //    per-form publication descriptors (300s) actually save traffic.
+            if (!forceRefresh && !noStoreProbe && meta != null && !isNoStore(meta)) {
+                val maxAge = maxAgeMillis(meta)
+                val age = System.currentTimeMillis() - meta.storedAt
+                if (maxAge != null && age in 0 until maxAge) {
+                    retrieveBytesFromDisk(url)?.let { (bytes, stored) ->
+                        Log.d(TAG, "CacheInterceptor FRESH_HIT $url (age ${age}ms < ${maxAge}ms)")
+                        return cachedResponse(cleanRequest, bytes, stored, "FRESH_HIT")
+                    }
+                }
+            }
+
+            // 2. Stale (or forced): revalidate with the validators the server
+            //    gave us instead of downloading the body again. A 304 then costs
+            //    headers only — this is the RESPECT-style check the Tangerine
+            //    server supports (ETag + Last-Modified on every OPDS response).
+            val etag = meta?.let { metaHeader(it, "etag") }
+            val lastModified = meta?.let { metaHeader(it, "last-modified") }
+            val canValidate = meta != null && !isNoStore(meta) &&
+                (etag != null || lastModified != null)
+            val networkRequest = if (canValidate) {
+                cleanRequest.newBuilder().apply {
+                    etag?.also { header("If-None-Match", it) }
+                    lastModified?.also { header("If-Modified-Since", it) }
+                }.build()
+            } else {
+                cleanRequest
+            }
+
+            Log.d(
+                TAG,
+                "CacheInterceptor FETCH $url — trying network" +
+                    (if (canValidate) " (conditional)" else "")
+            )
+            return try {
+                val networkResponse = chain.proceed(networkRequest)
+
+                if (networkResponse.code == 304 && meta != null) {
+                    // Still current: refresh storedAt + cache headers, serve the
+                    // copy we already have. The body was never transferred. A
+                    // probe leaves the metadata untouched.
+                    val updatedMeta = if (noStoreProbe) meta else touchMeta(url, meta, networkResponse)
+                    networkResponse.close()
+                    val stored = retrieveBytesFromDisk(url)
+                    if (stored != null) {
+                        Log.d(TAG, "CacheInterceptor REVALIDATED $url (304)")
+                        cachedResponse(cleanRequest, stored.first, updatedMeta, "REVALIDATED")
+                    } else {
+                        Log.w(TAG, "CacheInterceptor 304 but body missing for $url — refetching")
+                        chain.proceed(cleanRequest)
+                    }
+                } else if (noStoreProbe) {
+                    // Caller only wants the bytes for comparison: hand them back
+                    // without touching the cached entry.
+                    Log.d(TAG, "CacheInterceptor PROBE $url (not stored)")
+                    networkResponse
+                } else if (networkResponse.isSuccessful && networkResponse.body != null) {
                     try {
                         val bodyBytes = networkResponse.body!!.bytes()
                         val contentType = networkResponse.header("Content-Type")
@@ -367,7 +553,7 @@ class TangyCachePlugin : Plugin() {
                         Log.d(TAG, "CacheInterceptor STORED $url")
 
                         val rebuilt = Response.Builder()
-                            .request(request)
+                            .request(cleanRequest)
                             .protocol(networkResponse.protocol)
                             .code(networkResponse.code)
                             .message(networkResponse.message)
@@ -388,7 +574,7 @@ class TangyCachePlugin : Plugin() {
             } catch (e: Exception) {
                 // Network failed — try cache as fallback for offline resilience
                 Log.w(TAG, "CacheInterceptor network failed for $url: ${e.message} — trying cache fallback")
-                serveFromDiskOrRespect(request) ?: throw e
+                serveFromDiskOrRespect(cleanRequest) ?: throw e
             }
         }
     }
@@ -553,12 +739,23 @@ class TangyCachePlugin : Plugin() {
     }
 
     inner class CachingWebViewClient : WebViewClient() {
+        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            super.onPageStarted(view, url, favicon)
+            if (view != null) scheduleOverlayLoading(view)
+        }
+
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
+            // Identity check: a superseded overlay's WebView can still report
+            // finish, and must not clear the bar of the overlay now on screen.
+            if (view != null && view === currentWebView) hideOverlayLoading()
             // Inject the form interceptor (offline submissions) plus the
             // permission-help banner (camera/mic/location denial messaging)
             // and the xAPI relay (RESPECT launcher IPC handoff).
             view?.evaluateJavascript(FORM_INTERCEPT_SCRIPT, null)
+            // Paint the player with the app's Tangerine palette (the release
+            // ships Material's default indigo/pink chrome).
+            view?.evaluateJavascript(FORM_THEME_SCRIPT, null)
             view?.evaluateJavascript(PERMISSION_HELP_SCRIPT, null)
             view?.evaluateJavascript(XAPI_RELAY_SCRIPT, null)
             // Move xAPI batches the form player parked in its own localStorage outbox
@@ -568,6 +765,24 @@ class TangyCachePlugin : Plugin() {
             // Auto-close after submission (returns to the Tangerine form list for
             // forms opened from it; RESPECT-launched lessons are handled natively).
             view?.evaluateJavascript(FORM_SUBMIT_WATCH_SCRIPT, null)
+        }
+
+        /**
+         * A failed main-frame load used to leave the overlay white forever. Show
+         * what happened, with a retry and a way back.
+         */
+        override fun onReceivedError(
+            view: WebView?,
+            request: WebResourceRequest?,
+            error: WebResourceError?
+        ) {
+            super.onReceivedError(view, request, error)
+            if (view == null || request == null || !request.isForMainFrame) return
+            val description = error?.description?.toString()
+                ?.takeIf { it.isNotBlank() }
+                ?: "The form could not be loaded."
+            Log.w(TAG, "Overlay load failed: $description (${request.url})")
+            showOverlayError(view, description)
         }
 
         override fun shouldInterceptRequest(
@@ -673,6 +888,16 @@ class TangyCachePlugin : Plugin() {
                 Log.i(TAG, "LessonJS[" + (message.messageLevel()?.name ?: "LOG") + "]: " + message.message())
             }
             return super.onConsoleMessage(message)
+        }
+
+        /** Real load progress for the overlay (0..100, main-frame weighted). */
+        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+            super.onProgressChanged(view, newProgress)
+            // Nothing to draw: the loader is indeterminate. But a page that reaches
+            // 100% has finished rendering its main frame, so stop covering it.
+            if (newProgress >= 100 && view != null && view === currentWebView) {
+                hideOverlayLoading()
+            }
         }
 
         override fun onPermissionRequest(request: PermissionRequest) {
@@ -922,9 +1147,180 @@ class TangyCachePlugin : Plugin() {
         pendingCaptureUri = null
     }
 
+    /**
+     * The DEMO MODE pill for the cached-WebView toolbar.
+     *
+     * The app's own header shows this pill on every screen (`.demo-badge` in
+     * www/css/styles.css), because the demo server gives any visitor read/write
+     * access to shared sample data. A form, however, opens in a separate WebView
+     * with its own native toolbar — so the pill disappeared exactly where a user
+     * is most likely to edit that shared data.
+     *
+     * Same look as the web pill: accent orange fill, dark navy text, uppercase,
+     * pill radius. It is a label, not a control, so it never takes a tap.
+     */
+    private fun buildDemoModeBadge(act: Activity, label: String): TextView {
+        val density = act.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density).toInt()
+        val background = GradientDrawable().apply {
+            setColor(Color.parseColor("#f26f10"))
+            cornerRadius = dp(11).toFloat()
+        }
+        return TextView(act).apply {
+            text = label
+            setTextColor(Color.parseColor("#212a3f"))
+            textSize = 11f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.06f
+            isAllCaps = true
+            gravity = Gravity.CENTER
+            setPadding(dp(9), dp(3), dp(9), dp(3))
+            setBackground(background)
+            isClickable = false
+            isFocusable = false
+            contentDescription = label
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = Gravity.CENTER_VERTICAL }
+        }
+    }
+
+    /**
+     * Loading UI for the cached-WebView overlay: a white panel with a centred
+     * spinner and a label, drawn on top of the WebView.
+     *
+     * A form is an Angular SPA: after the document arrives its bundles still have
+     * to download, compile and bootstrap before anything paints, so the overlay
+     * otherwise sits on the WebView's unstyled white page for a noticeable time
+     * — indistinguishable from a hang on a slow or unreachable host. The form
+     * cannot do this itself: it cannot render until that same work is done.
+     */
+    private fun buildOverlayLoadingView(act: Activity): LinearLayout {
+        val density = act.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density).toInt()
+        val box = LinearLayout(act).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            // Opaque: it is covering the page, not annotating it.
+            setBackgroundColor(Color.WHITE)
+            visibility = View.GONE
+        }
+        box.addView(ProgressBar(act).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#3c5b8d"))
+        })
+        box.addView(TextView(act).apply {
+            text = "Loading form…"
+            setTextColor(Color.parseColor("#3c5b8d"))
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, 0)
+        })
+        return box
+    }
+
+    /**
+     * Reveal the loading panel if the load is still running after a short grace
+     * period. Pinned/offline forms finish inside it, and a spinner that flashes
+     * on every tap is worse than no spinner at all.
+     */
+    private fun scheduleOverlayLoading(webView: WebView) {
+        if (webView !== currentWebView) return
+        val loader = currentLoadingView ?: return
+        cancelPendingLoadingShow()
+        loader.visibility = View.GONE
+        overlayPageLoading = true
+        val show = Runnable {
+            pendingLoadingShow = null
+            if (webView === currentWebView && overlayPageLoading) {
+                Log.d(TAG, "Overlay loader shown (load still running after grace)")
+                loader.visibility = View.VISIBLE
+            }
+        }
+        pendingLoadingShow = show
+        loader.postDelayed(show, OVERLAY_LOADING_GRACE_MS)
+    }
+
+    private fun hideOverlayLoading() {
+        overlayPageLoading = false
+        cancelPendingLoadingShow()
+        currentLoadingView?.visibility = View.GONE
+    }
+
+    private fun cancelPendingLoadingShow() {
+        val pending = pendingLoadingShow ?: return
+        currentLoadingView?.removeCallbacks(pending)
+        pendingLoadingShow = null
+    }
+
+    /**
+     * Replace a failed load with an explanation. Without this the overlay keeps
+     * showing a blank white page with no hint that anything went wrong.
+     */
+    private fun showOverlayError(webView: WebView, description: String) {
+        val act = activity ?: return
+        val root = currentWebViewRoot ?: return
+        val frame = overlayContentFrame ?: return
+        if (webView !== currentWebView) return
+        hideOverlayLoading()
+        // A failed load can report several errors; keep the first explanation.
+        if (frame.findViewWithTag<View>(OVERLAY_ERROR_TAG) != null) return
+
+        val density = act.resources.displayMetrics.density
+        fun dp(value: Int) = (value * density).toInt()
+
+        webView.visibility = View.GONE
+        val errorView = LinearLayout(act).apply {
+            tag = OVERLAY_ERROR_TAG
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.WHITE)
+            setPadding(dp(32), dp(32), dp(32), dp(32))
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        errorView.addView(TextView(act).apply {
+            text = "Could not open this form"
+            setTextColor(Color.parseColor("#212a3f"))
+            textSize = 18f
+            gravity = Gravity.CENTER
+        })
+        errorView.addView(TextView(act).apply {
+            text = description
+            setTextColor(Color.parseColor("#555555"))
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, dp(24))
+        })
+        val buttons = LinearLayout(act).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        buttons.addView(Button(act).apply {
+            text = "Try again"
+            setOnClickListener {
+                frame.removeView(errorView)
+                webView.visibility = View.VISIBLE
+                webView.reload()
+            }
+        })
+        buttons.addView(Button(act).apply {
+            text = "Close"
+            setOnClickListener { closeCachedWebView(root) }
+        })
+        errorView.addView(buttons)
+        frame.addView(errorView)
+    }
+
     /** Release any pending permission/file-chooser state, then remove the WebView. */
     private fun closeCachedWebView(rootLayout: ViewGroup) {
         completeFileChooser(null)
+        hideOverlayLoading()
+        currentLoadingView = null
+        overlayContentFrame = null
         val media = pendingMediaRequest
         val action = pendingPermissionAction
         pendingMediaRequest = null
@@ -1053,6 +1449,10 @@ class TangyCachePlugin : Plugin() {
         val url = call.getString("url") ?: return call.reject("url is required")
         val closeButtonText = call.getString("closeButtonText", "Close") ?: "Close"
         val showToolbar = call.getBoolean("showToolbar", true) ?: true
+        // Demo mode is a property of the SERVER, so the overlay header has to say
+        // it too: the form is where sample data actually gets edited.
+        val demoMode = call.getBoolean("demoMode", false) ?: false
+        val demoModeLabel = call.getString("demoModeLabel") ?: "DEMO MODE"
         // RESPECT-launched lessons (opened via a deep link from the launcher):
         // closing or backing out of them returns the user to the launcher.
         val launchedFromRespect = call.getBoolean("launchedFromRespect", false) ?: false
@@ -1066,6 +1466,9 @@ class TangyCachePlugin : Plugin() {
                 currentWebViewRoot?.let { prevRoot ->
                     (prevRoot.parent as? ViewGroup)?.removeView(prevRoot)
                     unregisterCachedWebViewBackHandler()
+                    hideOverlayLoading()
+                    currentLoadingView = null
+                    overlayContentFrame = null
                     currentWebViewRoot = null
                     currentWebView = null
                     currentRespectLaunch = false
@@ -1110,6 +1513,19 @@ class TangyCachePlugin : Plugin() {
                         )
                     }
                     toolbar.addView(spacer)
+                    // Demo-mode pill, centred between the two buttons. A form opens in
+                    // its own WebView with its own native toolbar, so without this the
+                    // pill vanished exactly where sample data is edited.
+                    if (demoMode) {
+                        toolbar.addView(buildDemoModeBadge(activity, demoModeLabel))
+                        // Mirrors the left spacer, so the badge lands in the middle
+                        // instead of hugging the close button.
+                        toolbar.addView(TextView(activity).apply {
+                            layoutParams = LinearLayout.LayoutParams(
+                                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                            )
+                        })
+                    }
                     // Close button (right end). Material close vector, matching
                     // RESPECT's Icons.Filled.Close.
                     val closeBtn = ImageView(activity).apply {
@@ -1144,10 +1560,27 @@ class TangyCachePlugin : Plugin() {
                     rootLayout.addView(toolbar)
                 }
 
-                val webView = WebView(activity).apply {
+                // Content area: a frame holding the WebView and the loader that
+                // covers it while the form loads (see buildOverlayLoadingView).
+                // A frame, not another row, so the loader sits ON TOP of the page
+                // instead of splitting the column with it.
+                val contentFrame = FrameLayout(activity).apply {
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         0, 1f
+                    )
+                }
+                val loadingView = buildOverlayLoadingView(activity).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                }
+
+                val webView = WebView(activity).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
                     )
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
@@ -1182,7 +1615,13 @@ class TangyCachePlugin : Plugin() {
                     insets
                 }
 
-                rootLayout.addView(webView)
+                contentFrame.addView(webView)
+                // Added last so it draws over the WebView's unstyled white page.
+                contentFrame.addView(loadingView)
+                rootLayout.addView(contentFrame)
+                overlayContentFrame = contentFrame
+                currentLoadingView = loadingView
+
                 activity.addContentView(
                     rootLayout,
                     ViewGroup.LayoutParams(
@@ -1273,6 +1712,44 @@ class TangyCachePlugin : Plugin() {
         call.resolve(JSObject().apply {
             put("cached", File(cacheDir(), filename).exists())
         })
+    }
+
+    /**
+     * Cache metadata for one or more URLs, without reading the bodies.
+     *
+     * The JS layer uses this to decide whether a pinned form is stale: it
+     * compares the server's publication `metadata.modified` with the `Date`
+     * header the server itself sent when the copy was stored (falling back to
+     * the local storedAt). Using the server's own clock avoids marking every
+     * form stale on a device whose clock is ahead.
+     */
+    @PluginMethod
+    fun getCacheInfo(call: PluginCall) {
+        val urlsArray = call.getArray("urls") ?: run {
+            val single = call.getString("url")
+                ?: return call.reject("urls is required")
+            JSArray().apply { put(single) }
+        }
+
+        val entries = JSArray()
+        for (i in 0 until urlsArray.length()) {
+            val url = urlsArray.optString(i)
+            if (url.isNullOrEmpty()) continue
+
+            val meta = readMeta(url)
+            entries.put(JSObject().apply {
+                put("url", url)
+                put("cached", File(cacheDir(), urlToFilename(url)).exists())
+                put("storedAt", meta?.storedAt ?: 0L)
+                put("sizeBytes", meta?.sizeBytes ?: 0L)
+                put("etag", meta?.let { metaHeader(it, "etag") } ?: "")
+                put("lastModified", meta?.let { metaHeader(it, "last-modified") } ?: "")
+                put("cacheControl", meta?.let { metaHeader(it, "cache-control") } ?: "")
+                put("serverDate", meta?.let { metaHeader(it, "date") } ?: "")
+            })
+        }
+
+        call.resolve(JSObject().apply { put("entries", entries) })
     }
 
     @PluginMethod
@@ -1477,36 +1954,28 @@ class TangyCachePlugin : Plugin() {
 
     @PluginMethod
     fun getPendingCount(call: PluginCall) {
-        val count = pendingDir().listFiles()?.count { it.name.endsWith(".json") } ?: 0
-        call.resolve(JSObject().apply { put("count", count) })
+        call.resolve(JSObject().apply { put("count", pendingFiles().size) })
     }
 
     @PluginMethod
     fun syncPending(call: PluginCall) {
         scope.launch {
             try {
-                val files = pendingDir().listFiles()?.filter { it.name.endsWith(".json") }
-                    ?: emptyList()
-                var synced = 0
-                var failed = 0
-                for (file in files) {
-                    try {
-                        val submission = gson.fromJson(file.readText(Charsets.UTF_8), PendingSubmission::class.java)
-                        val request = Request.Builder().url(submission.url)
-                            .method(submission.method, submission.body.toRequestBody(null))
-                            .apply {
-                                submission.headers.forEach { (k, v) -> addHeader(k, v) }
-                            }
-                            .build()
-                        val response = okHttpClient.newCall(request).execute()
-                        if (response.isSuccessful) synced++ else failed++
-                        response.close()
-                        file.delete()
-                    } catch (e: Exception) {
-                        failed++
-                        Log.w(TAG, "Sync failed for ${file.name}: ${e.message}")
-                    }
+                val result = drainPendingQueue()
+                // Null means the automatic post-reconnect drain already owns the
+                // queue. Reporting 0/0 would read as "nothing to upload", which
+                // is wrong while an upload is in flight — say so instead.
+                if (result == null) {
+                    call.resolve(JSObject().apply {
+                        put("synced", 0)
+                        put("failed", 0)
+                        put("xapiSynced", 0)
+                        put("remaining", pendingFiles().size)
+                        put("skipped", true)
+                    })
+                    return@launch
                 }
+                val (synced, failed) = result
                 // Also attempt delivery of queued xAPI statement batches.
                 var xapiSynced = 0
                 try {
@@ -1518,6 +1987,8 @@ class TangyCachePlugin : Plugin() {
                     put("synced", synced)
                     put("failed", failed)
                     put("xapiSynced", xapiSynced)
+                    put("remaining", pendingFiles().size)
+                    put("skipped", false)
                 })
             } catch (e: Exception) {
                 call.reject("Sync failed: ${e.message}")
@@ -1527,8 +1998,95 @@ class TangyCachePlugin : Plugin() {
 
     @PluginMethod
     fun clearPending(call: PluginCall) {
-        pendingDir().listFiles()?.forEach { it.delete() }
+        pendingFiles().forEach { it.delete() }
         call.resolve()
+    }
+
+    // ── Offline submission drain ─────────────────────────────────────────
+
+    /**
+     * Every queued submission still on disk, including files a drain has
+     * already claimed. Counting both keeps the badge honest while an upload is
+     * in flight (a claimed response has not been delivered yet).
+     */
+    private fun pendingFiles(): List<File> =
+        pendingDir().listFiles()
+            ?.filter {
+                it.isFile && (it.name.endsWith(".json") || it.name.endsWith(SENDING_SUFFIX))
+            }
+            ?: emptyList()
+
+    /**
+     * Upload every queued submission once.
+     *
+     * Each file is renamed to `<id>.json.sending` before the POST so a
+     * concurrent drain cannot pick it up, and it is only deleted when the
+     * server ACCEPTED it. A rejected (4xx/5xx) or failed submission stays on
+     * disk: it is the user's data, and the previous implementation deleted it
+     * on any non-2xx response.
+     *
+     * @returns synced to failed counts, or null when another drain holds the lock.
+     */
+    private suspend fun drainPendingQueue(): Pair<Int, Int>? {
+        if (!pendingDrainLock.compareAndSet(false, true)) {
+            Log.i(TAG, "A pending drain is already running; skipping this one")
+            return null
+        }
+        var synced = 0
+        var failed = 0
+        try {
+            for (queued in pendingFiles()) {
+                val claimed = claimPending(queued) ?: continue
+                if (uploadPending(claimed)) {
+                    claimed.delete()
+                    synced++
+                } else {
+                    failed++
+                    releaseClaim(claimed)
+                }
+            }
+        } finally {
+            pendingDrainLock.set(false)
+        }
+        Log.i(TAG, "Pending drain finished: $synced uploaded, $failed kept for retry")
+        return synced to failed
+    }
+
+    /** Rename `<id>.json` to `<id>.json.sending`. Null when another drain won. */
+    private fun claimPending(file: File): File? {
+        // Already claimed by a drain that died before finishing — take it over.
+        if (file.name.endsWith(SENDING_SUFFIX)) return file
+        val target = File(file.parentFile, file.name + SENDING_SUFFIX)
+        return if (file.renameTo(target)) target else null
+    }
+
+    /** Give a claimed file back to the queue so the next drain retries it. */
+    private fun releaseClaim(file: File) {
+        val back = File(file.parentFile, file.name.removeSuffix(SENDING_SUFFIX))
+        if (!file.renameTo(back)) Log.w(TAG, "Could not release claim on ${file.name}")
+    }
+
+    /** POST one claimed submission. False on rejection OR network failure. */
+    private fun uploadPending(file: File): Boolean {
+        return try {
+            val submission = gson.fromJson(file.readText(Charsets.UTF_8), PendingSubmission::class.java)
+            val request = Request.Builder().url(submission.url)
+                .method(submission.method, submission.body.toRequestBody(null))
+                .apply {
+                    submission.headers.forEach { (k, v) -> addHeader(k, v) }
+                }
+                .build()
+            val response = okHttpClient.newCall(request).execute()
+            val accepted = response.isSuccessful
+            if (!accepted) {
+                Log.w(TAG, "Server rejected queued submission ${file.name}: HTTP ${response.code}")
+            }
+            response.close()
+            accepted
+        } catch (e: Exception) {
+            Log.w(TAG, "Upload failed for ${file.name}: ${e.message}")
+            false
+        }
     }
 
     /**
@@ -1709,26 +2267,7 @@ class TangyCachePlugin : Plugin() {
                 Log.i(TAG, "Network available — syncing pending submissions")
                 scope.launch {
                     try {
-                        val files = pendingDir().listFiles()?.filter { it.name.endsWith(".json") } ?: emptyList()
-                        for (file in files) {
-                            try {
-                                val submission = gson.fromJson(
-                                    file.readText(Charsets.UTF_8),
-                                    PendingSubmission::class.java
-                                )
-                                val request = Request.Builder().url(submission.url)
-                                    .method(submission.method, submission.body.toRequestBody(null))
-                                    .apply {
-                                        submission.headers.forEach { (k, v) -> addHeader(k, v) }
-                                    }
-                                    .build()
-                                val response = okHttpClient.newCall(request).execute()
-                                if (response.isSuccessful) file.delete()
-                                response.close()
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Auto-sync failed for ${file.name}: ${e.message}")
-                            }
-                        }
+                        drainPendingQueue()
                         // Replay xAPI statements queued while the launcher IPC was down.
                         try {
                             replayQueuedXapi()
@@ -1791,7 +2330,7 @@ class TangyCachePlugin : Plugin() {
 
         @android.webkit.JavascriptInterface
         fun getPendingCount(): Int {
-            return pendingDir.listFiles()?.count { it.name.endsWith(".json") } ?: 0
+            return pendingFiles().size
         }
 
         /**
@@ -1876,6 +2415,37 @@ class TangyCachePlugin : Plugin() {
         private const val TAG = "TangyCache"
 
         /**
+         * Request marker the JS layer sends for an explicit refresh (the Sync
+         * button / revalidation probe). CacheInterceptor treats its presence as
+         * "ignore any fresh copy and revalidate now", then strips it so it is
+         * never sent to the origin.
+         */
+        private const val HEADER_FORCE_REFRESH = "X-Tangy-Refresh"
+
+        /**
+         * Suffix a drain appends to a queued submission while uploading it, so a
+         * second drain cannot pick up the same file and POST it twice.
+         */
+        private const val SENDING_SUFFIX = ".sending"
+
+        /**
+         * Probe marker: fetch the current bytes but do NOT store them. Used by
+         * staleness checks, which must not overwrite the copy they compare
+         * against.
+         */
+        private const val HEADER_NO_STORE = "X-Tangy-No-Store"
+
+        /**
+         * How long a cached-WebView load may run before its progress bar is
+         * revealed. Pinned/offline forms paint in well under this; showing the bar
+         * for them would be a flicker on every tap.
+         */
+        private const val OVERLAY_LOADING_GRACE_MS = 250L
+
+        /** Identifies the load-failure view inside the overlay's root layout. */
+        private const val OVERLAY_ERROR_TAG = "tangy-overlay-error"
+
+        /**
          * JavaScript injected into every page loaded in a cached WebView.
          * Replaces the native form submit with a call to TangyCacheBridge,
          * which goes through the offline-capable native HTTP pipeline.
@@ -1905,6 +2475,49 @@ class TangyCachePlugin : Plugin() {
                         form.submit();
                     }
                 });
+            })();
+        """
+
+        /**
+         * JavaScript injected into every cached WebView page: paints the form
+         * player with the app's Tangerine palette.
+         *
+         * A release ships Angular Material's DEFAULT theme — indigo #3f51b5 and
+         * pink #ff4081 — so the player looked like the old Polymer/violet build
+         * next to a UI that is Tangerine navy/orange. The release's own sheet
+         * already defines --primary-color #3c5b8d / --accent-color #f26f10 on
+         * html,body, but Material's components read --mdc-theme-primary and
+         * --mdc-theme-secondary and fall back to the defaults because the
+         * release never sets them.
+         *
+         * Only custom properties are overridden — never element selectors — so
+         * the form's layout, typography and behaviour are untouched. The
+         * `html:root`/`body:root` specificity outranks the compiled
+         * `html,body{...}` block, so the override wins regardless of the order
+         * the stylesheets end up in.
+         */
+        private const val FORM_THEME_SCRIPT = """
+            (function() {
+                if (document.getElementById('tangy-theme-override')) return;
+                var css = 'html:root, body:root {' +
+                    '--mdc-theme-primary: #3c5b8d;' +
+                    '--mdc-theme-on-primary: #ffffff;' +
+                    '--mdc-theme-secondary: #f26f10;' +
+                    '--mdc-theme-on-secondary: #ffffff;' +
+                    '--mdc-theme-surface: #ffffff;' +
+                    '--mdc-theme-on-surface: #212121;' +
+                    '--mdc-theme-background: #f7f6f6;' +
+                    '--primary-color: #3c5b8d;' +
+                    '--primary-color-dark: #212a3f;' +
+                    '--primary-text-color-overlay: #ffffff;' +
+                    '--accent-color: #f26f10;' +
+                    '--accent-color-dark: #cc5500;' +
+                    '--accent-text-color: #ffffff;' +
+                '}';
+                var style = document.createElement('style');
+                style.id = 'tangy-theme-override';
+                style.appendChild(document.createTextNode(css));
+                (document.head || document.documentElement).appendChild(style);
             })();
         """
 

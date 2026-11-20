@@ -1,0 +1,51 @@
+# R4, phase 1 — open a RESPECT assignment and launch its Tangerine form task.
+#
+# Catalogue case 4: "Add a Tangerine form as a task to a Respect assignment ->
+# open, fill and submit the form from Respect -> verify the task is completed in
+# the Respect assignment".
+#
+# The ASSIGNMENT ITSELF IS A PRECONDITION. Step (a) cannot be automated with the
+# E2E account: creating an assignment needs a RESPECT teacher/admin login (the
+# "Assign" quick action on a learning unit is gated on
+# `person.isAdminOrTeacher()`), so an assignment that already carries the
+# Tangerine form as its task must exist first. This flow starts from that state
+# and drives (b); 041 then asserts (c).
+#
+# The path matters: the statements are only attributed to the assignment when the
+# lesson is launched FROM the assignment (RESPECT passes its assignment activity
+# id into the launch URL, and the app echoes it back in the xAPI
+# contextActivities.grouping that RESPECT's assignment query filters on). Opening
+# the same form from Apps -> Tangerine would submit fine but never count.
+#
+# Requires: ASSIGNMENT_NAME (an assignment whose single task is a Tangerine form)
+appId: world.respect.app
+---
+- stopApp
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Apps"
+    timeout: 60000
+
+# Bottom-nav tab. Coming from a cold start (Home) the label is unambiguous: the
+# list screen's own title is not on screen yet.
+- tapOn: "Assignments"
+- extendedWaitUntil:
+    visible: "${ASSIGNMENT_NAME}"
+    timeout: 60000
+
+- tapOn: "${ASSIGNMENT_NAME}"
+- extendedWaitUntil:
+    visible: "Assigned to"
+    timeout: 60000
+
+# The task row. Its leading image carries the contentDescription "Task Image" -
+# the task's own name is data (not known to the flow), and the row's other text
+# ("<n>/<m> Completed", the student name) changes state, so this is the stable
+# target. Tapping it opens the learning-unit detail, where "Open" lives.
+- tapOn: "Task Image"
+
+# Parked on the learning-unit detail: "Open" is what hands off to the app.
+- extendedWaitUntil:
+    visible: "Open"
+    timeout: 60000

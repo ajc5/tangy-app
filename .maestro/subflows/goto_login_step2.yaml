@@ -4,20 +4,17 @@
 #
 # Requires: SERVER_URL (no trailing slash — the app strips one when saving).
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
-# Tap near the right edge so the caret lands at the END of the value. Tapping
-# the centre (the default) puts the caret mid-string when the field is
-# pre-filled, which makes eraseText delete only the part before it and inputText
-# splice the new URL into the middle.
+# Tap near the right edge: with the remembered server URL in the field, that
+# edge is the field's clear (X) button, so the tap empties the field (and keeps
+# the caret in it) instead of dropping the caret mid-string, where eraseText
+# would only delete the part before it. The eraseText is the belt-and-braces
+# case for a field that was already empty.
 - tapOn:
     id: "server-url"
     point: "95%,50%"
-# The field is pre-filled with the remembered server URL (renderLoginStep1 sets
-# value from localStorage.serverUrl), so clear it before typing.
 - eraseText: 200
 - inputText: ${SERVER_URL}
-
 # Focusing the field opens the recent-servers suggestion list, which is
 # absolutely positioned and overlaps the Connect button. Blur the field by
 # tapping the heading and wait for the list to close before tapping Connect,

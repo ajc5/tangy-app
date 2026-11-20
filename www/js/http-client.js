@@ -89,6 +89,44 @@ const httpClient = (() => {
     return err;
   }
 
+  // ── Session-expiry reporting ──────────────────────────────────────────────
+  // An AUTHENTICATED request that comes back 401 means the stored token is no
+  // longer accepted (expired JWT, revoked account, changed password). This
+  // layer only reports it; recovery belongs to views.js.
+  let onUnauthorized = null;
+
+  /**
+   * Whether this response proves the SESSION is dead, as opposed to a probe
+   * that expects 401 or a login attempt with the wrong password.
+   *
+   * Excluded on purpose:
+   *  - requests that sent no Authorization header (the step-1
+   *    `/respect-app-manifest` probe treats 401 as "this is a Tangerine
+   *    server", and POST `/login` uses 401 for bad credentials);
+   *  - those two paths again, as a belt-and-braces guard should a caller ever
+   *    attach a token to them.
+   */
+  function isSessionExpiry(url, headers, response) {
+    if (!response || response.status !== 401) return false;
+    if (!headers || !headers.Authorization) return false;
+    const path = String(url || '').split('?')[0];
+    if (path.endsWith('/respect-app-manifest')) return false;
+    if (path.endsWith('/login')) return false;
+    return true;
+  }
+
+  /** Notify the UI about an expired session, then hand the response back. */
+  function reportExpiry(url, headers, response) {
+    if (onUnauthorized && isSessionExpiry(url, headers, response)) {
+      try {
+        onUnauthorized(url);
+      } catch (e) {
+        console.warn('[HTTP] Unauthorized handler failed:', e);
+      }
+    }
+    return response;
+  }
+
   async function request(url, { method = 'GET', headers = {}, body } = {}) {
     const native = isNative();
     const tangyCache = getTangyCache();
@@ -105,7 +143,7 @@ const httpClient = (() => {
           ...(body !== undefined ? { body } : {})
         });
         console.log('[HTTP] TangyCache:', method, url, result.status);
-        return wrapTangyCacheResponse(result);
+        return reportExpiry(url, headers, wrapTangyCacheResponse(result));
       } catch (err) {
         lastErr = err;
         console.warn('[HTTP] TangyCache failed, fallback:', err.message);
@@ -126,7 +164,7 @@ const httpClient = (() => {
             : {})
         });
         console.log('[HTTP] CapacitorHttp:', method, url, result.status);
-        return wrapCapacitorHttpResponse(result);
+        return reportExpiry(url, headers, wrapCapacitorHttpResponse(result));
       } catch (err) {
         lastErr = err;
         console.warn('[HTTP] CapacitorHttp failed, fallback:', err.message);
@@ -138,7 +176,7 @@ const httpClient = (() => {
     const fetchOptions = { method, headers };
     if (body) fetchOptions.body = body;
     try {
-      return await fetch(url, fetchOptions);
+      return reportExpiry(url, headers, await fetch(url, fetchOptions));
     } catch (err) {
       lastErr = err;
     }
@@ -150,6 +188,16 @@ const httpClient = (() => {
 
   return {
     request,
+
+    /**
+     * Register the session-expiry callback. `fn(url)` runs whenever an
+     * AUTHENTICATED request is rejected with 401 — i.e. the stored token is no
+     * longer accepted. The transport reports it and leaves recovery to views.js.
+     */
+    setUnauthorizedHandler(fn) {
+      onUnauthorized = typeof fn === 'function' ? fn : null;
+    },
+
     async get(url, headers = {}) { return request(url, { method: 'GET', headers }); },
     async post(url, body, headers = {}) { return request(url, { method: 'POST', headers, body }); },
     async put(url, body, headers = {}) { return request(url, { method: 'PUT', headers, body }); },

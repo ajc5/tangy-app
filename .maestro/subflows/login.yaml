@@ -4,12 +4,17 @@
 #
 # Requires: SERVER_URL, USERNAME, PASSWORD.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "goto_login_step2.yaml"
 
+# The demo server prefills appuser/Password1! into an untouched form, so tap the
+# right edge of each field first: that lands on the field's clear (X) button
+# when it has text (emptying it and keeping the caret in it), and simply focuses
+# the input when it is already empty. Typing straight into a prefilled field
+# would append to the demo value instead of replacing it.
 - tapOn:
     id: "username"
+    point: "95%,50%"
 - inputText: ${USERNAME}
 
 # Focusing the username field opens the recent-usernames suggestion list, which
@@ -23,6 +28,7 @@ androidWebViewHierarchy: devtools
 
 - tapOn:
     id: "password"
+    point: "95%,50%"
 - inputText: ${PASSWORD}
 
 # Submit with Enter (implicit form submission). Tapping the Login button is

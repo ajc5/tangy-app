@@ -1,6 +1,15 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 
+// Release/upload signing credentials live in android/keystore.properties (git-ignored).
+// Without that file the release build stays unsigned (debug builds are unaffected).
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+def hasReleaseSigning = keystorePropsFile.exists()
+if (hasReleaseSigning) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace = "org.tangerinecentral.tangerine"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -9,19 +18,62 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
-            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+            // `!*.map` strips the pdf.js source maps shipped inside the
+            // @capacitor/inappbrowser AAR (~7.6 MB, DevTools-only), and `!*.bak`
+            // guards against editor backups creeping back into www/.
+            // Note: packagingOptions.resources.excludes does NOT apply to AAR
+            // assets, so this aapt-level pattern is the mechanism that works.
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:!*.map:!*.bak'
+        }
+    }
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+                // Play App Signing: the upload key signs the bundle, Google re-signs for distribution.
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
         }
     }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            // Play-distributed builds must never be debuggable.
+            debuggable false
         }
+    }
+    bundle {
+        language {
+            // Ship all translations in the base module; the content/UI is fully
+            // runtime-switchable and split language modules would strip strings
+            // the WebView asks for at runtime.
+            enableSplit = false
+        }
+        density {
+            enableSplit = true
+        }
+        abi {
+            enableSplit = true
+        }
+    }
+    dependenciesInfo {
+        // Strip the Play-only dependency metadata block from the bundle manifest.
+        includeInApk = false
+        includeInBundle = false
     }
     kotlinOptions {
         jvmTarget = '21'

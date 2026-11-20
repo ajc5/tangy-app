@@ -8,6 +8,5 @@
 #
 # Requires: ANSWER
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "../subflows/fill_and_submit_form.yaml"

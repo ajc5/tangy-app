@@ -1,7 +1,6 @@
 # Entering a server URL advances to the credentials screen, and "Change"
 # returns to step 1 with the URL retained.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "../subflows/ensure_logged_out.yaml"
 

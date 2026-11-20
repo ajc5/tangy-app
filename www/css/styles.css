@@ -160,6 +160,45 @@ button:disabled {
   text-align: center;
 }
 
+/* ---- Loading state (group and form lists) ----
+   Both lists are painted before their OPDS feed resolves, so the screen would
+   otherwise be a heading over blank space — the same thing a hung request looks
+   like. A spinning arc plus a label says "working", and the label is real text,
+   so the state survives screenshots, screen readers and E2E assertions. */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 600px;
+  padding: 28px 20px;
+  color: var(--tangy-primary-color);
+  font-size: 14px;
+}
+
+.loading-spinner {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  /* Faint full ring (the track) with one opaque quarter (the arc). */
+  border: 2px solid rgba(60, 91, 141, 0.25);
+  border-top-color: var(--tangy-primary-color);
+  animation: loading-spin 0.8s linear infinite;
+}
+
+@keyframes loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Respect the OS "reduce motion" setting: keep the state visible, lose the spin. */
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 /* ---- Lists (material-list style) ---- */
 ul {
   list-style: none;
@@ -274,11 +313,29 @@ li:active {
   line-height: 1;
 }
 
-/* ---- Busy state: circular progress ring over the download arrow ----
-   Mirrors the RESPECT app's RespectOfflineItemStatusIcon (Compose):
-   a FileDownload icon with a CircularProgressIndicator drawn over it.
-   Indeterminate (spinning arc) while resources are being discovered,
-   determinate (arc tracks cached/total) while URLs are downloading. */
+/* ---- Stale state: a newer version exists on the server ----
+   Same shape as the green cached badge so it reads as "cached", but orange —
+   the copy is here, it is just not current. Tapping it downloads the update. */
+.dl-stale {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(239, 108, 0, 0.18);
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* ---- Busy state: circular progress ring around a centred glyph ----
+   Mirrors the RESPECT app's RespectOfflineItemStatusIcon (Compose): an icon
+   with a CircularProgressIndicator drawn over it. Indeterminate (spinning arc)
+   while resources are being discovered, determinate (arc tracks cached/total)
+   while URLs are downloading.
+
+   The glyph follows RESPECT's swap too: `file_download` while the job merely
+   resolves, the `stop` square once a tap would cancel the transfer. */
 .dl-progress {
   position: relative;
   display: inline-flex;
@@ -322,6 +379,16 @@ li:active {
 .dl-progress-arrow {
   fill: currentColor;
   opacity: 0.45;
+}
+
+/* Stop square (Material `stop`) - the cancel affordance, so it is drawn at
+   full strength and scaled in a little: the glyph spans half of its 24x24
+   viewBox, which would otherwise leave barely a pixel of clearance to the
+   10.5r ring. */
+.dl-progress-stop {
+  fill: currentColor;
+  transform: scale(0.88);
+  transform-origin: center;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -435,6 +502,47 @@ li:active {
   opacity: 0.8;
 }
 
+/* ---- Demo-mode badge ----
+   The demo server hands any visitor read/write access to shared sample data, so
+   "am I in demo mode?" must be answerable from every screen without opening a
+   menu. A filled pill centred in the bar does that: shouty enough to notice, and
+   it never competes with the logo or the menu button for space.
+   Dark navy on accent orange measures 4.8:1 — AA for this text size, unlike
+   white-on-orange (3.0:1). */
+.menu-bar .demo-badge {
+  position: absolute;
+  left: 50%;
+  /* Vertically centred in the 56px content row: the bar's padding-box also
+     covers the status-bar inset (edge-to-edge), so 50% of the box would sit
+     ~inset/2 too low. Base value first for WebViews without env(). */
+  top: 28px;
+  top: calc(env(safe-area-inset-top, 0px) + 28px);
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 11px;
+  background: var(--tangy-accent-color);
+  color: var(--tangy-primary-color-dark);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: default;
+  pointer-events: none; /* it is a label, not a control */
+}
+
+/* A centred badge owns the middle of the bar, and on a 360px phone there is no
+   room left for `[back] [logo] | title | pill | menu`: the title's share would
+   collapse to a few characters. Every titled screen repeats its title as the
+   page <h1> (groups, forms), so in demo mode the header drops the duplicate
+   instead of ellipsizing it to "F…". */
+.menu-bar.demo-mode .menu-title {
+  display: none;
+}
+
 /* ---- Login Logo ---- */
 .login-logo {
   display: block;
@@ -489,6 +597,31 @@ li:active {
   cursor: pointer;
 }
 
+/* ---- Transient status toast (update progress/summary) ---- */
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 3000;
+  max-width: calc(100% - 32px);
+  padding: 10px 16px;
+  border-radius: 20px;
+  background: rgba(33, 33, 33, 0.92);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.app-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .menu-hamburger:hover {
   background: rgba(255, 255, 255, 0.12);
 }
@@ -497,7 +630,8 @@ li:active {
    as a 40px touch target with the SVG centred instead of sizing a text glyph.
    font-size/line-height are zeroed so no glyph metrics leak into the layout. */
 .menu-back,
-.menu-hamburger {
+.menu-hamburger,
+.menu-sync {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -506,6 +640,47 @@ li:active {
   padding: 0;
   font-size: 0;
   line-height: 0;
+}
+
+/* ---- Sync button (form list only) ----
+   Uploads queued responses and updates downloaded forms in one round trip. It
+   spins while that runs; a tap during a run cancels the update half, which is
+   the same convention the download buttons use. */
+.menu-sync {
+  color: var(--tangy-primary-text-color-overlay);
+  cursor: pointer;
+  position: relative;
+}
+
+.menu-sync:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Responses waiting on the device. A dot, not a number: the header only answers
+   "is anything unsent?", and the sync run reports the counts. Sits on the icon's
+   top-right corner with a dark ring so it reads against the navy bar. */
+.menu-sync-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--tangy-accent-color);
+  box-shadow: 0 0 0 2px rgba(33, 42, 63, 0.9);
+  pointer-events: none;
+}
+
+.menu-sync-dot[hidden] {
+  display: none;
+}
+
+.menu-sync.is-syncing .menu-icon {
+  animation: menu-sync-spin 1s linear infinite;
+}
+
+@keyframes menu-sync-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Material Symbols paths (24x24 viewBox) inheriting the header's white. */
@@ -614,6 +789,85 @@ li:active {
   color: var(--tangy-primary-color);
 }
 
+/* About reads like the other actions, not like body text: the base
+   .dropdown-item colour made it look disabled next to them. */
+.dropdown-item-about {
+  color: var(--tangy-primary-color);
+  font-weight: 500;
+}
+
+.dropdown-item-about:hover {
+  background: #f5f5f5;
+  color: var(--tangy-primary-color);
+}
+
+/* ---- About dialog ---- */
+.about-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.about-card {
+  width: 100%;
+  max-width: 340px;
+  padding: 20px;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--tangy-primary-color-dark, #212a3f);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.about-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  color: var(--tangy-primary-color);
+}
+
+.about-app {
+  margin: 0 0 16px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.about-rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0 0 18px;
+  font-size: 13px;
+}
+
+.about-rows dt {
+  color: #666;
+}
+
+.about-rows dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.about-close {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 4px;
+  background: var(--tangy-primary-color);
+  color: var(--tangy-primary-text-color-overlay);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.about-close:hover {
+  opacity: 0.9;
+}
+
 /* ---- Recent servers/usernames are offered via <datalist> dropdowns on the
      server-url / username inputs; no chip styling needed. ---- */
 
@@ -623,10 +877,89 @@ li:active {
   width: 100%;
 }
 
+/* ---- Clear ("X") button inside the login fields ----
+   Retyping a 30-character server URL on a phone keyboard is the worst part of
+   the login screens, so every field carries a Material `close` button. The
+   wrapper is the positioning context (a bare <input> cannot hold a child);
+   `.input-suggest` already is one, hence the two classes on those fields. */
+.input-clearable {
+  position: relative;
+  width: 100%;
+}
+
+.input-clearable {
+  position: relative;
+  width: 100%;
+  /* The field's 16px gap lives on this box, not on the <input>, so the box is
+     exactly as tall as the field and the absolutely positioned clear button can
+     be centred against it with top: 50%. (The input's own margin would make the
+     wrapper taller than the field and push the button below the underline.) */
+  margin-bottom: 16px;
+}
+
+/* Keep the value from running underneath the button, but only where a button
+   exists: `.input-suggest` alone must keep its old padding. */
+.input-clearable input {
+  padding-right: 40px;
+  margin-bottom: 0;
+}
+
+.input-clear {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  display: none; /* revealed by the :placeholder-shown rule below */
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  box-shadow: none;
+  color: #757575;
+  cursor: pointer;
+}
+
+/* "Field has content" test with no JS to keep in sync: while the placeholder is
+   showing, the field is empty and there is nothing to clear. */
+.input-clearable input:not(:placeholder-shown) + .input-clear {
+  display: inline-flex;
+}
+
+.input-clear:hover,
+.input-clear:active {
+  background: rgba(60, 91, 141, 0.08);
+  box-shadow: none;
+}
+
+.input-clear .clear-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+  fill: currentColor;
+  pointer-events: none;
+}
+
+/* RTL: mirror both the button and the padding that reserves its space. */
+[dir="rtl"] .input-clear {
+  right: auto;
+  left: 0;
+}
+
+[dir="rtl"] .input-clearable input {
+  padding-right: 0;
+  padding-left: 40px;
+}
+
 .suggest-list {
   display: none;
   position: absolute;
-  top: calc(100% - 16px); /* offset the input's 16px margin-bottom so it sits right below the field */
+  /* Sits right below the field: `.input-suggest` boxes are exactly as tall as
+     their field (the 16px gap is a margin on the box, not on the input). */
+  top: 100%;
   left: 0;
   right: 0;
   z-index: 30;
@@ -665,6 +998,28 @@ li:active {
 .suggest-item:hover {
   background: rgba(60, 91, 141, 0.08);
   color: var(--tangy-primary-color);
+}
+
+/* The demo server gets a friendly name with its real URL underneath. Only this
+   row wraps; every other row keeps the single-line ellipsis. The URL is never
+   hidden or scheme-stripped — http vs https has to stay legible — and at 11px
+   it fits without truncation. */
+.suggest-item.has-sub {
+  white-space: normal;
+}
+
+.suggest-item-label {
+  display: block;
+}
+
+.suggest-item-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #757575;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .suggest-item:active {

@@ -2,20 +2,36 @@
 #
 # Requires: SERVER_URL, USERNAME.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "../subflows/ensure_logged_out.yaml"
 
 - runFlow: "../subflows/goto_login_step2.yaml"
 
-# Nothing entered -> rejected.
+# Nothing entered -> rejected. The demo server prefills appuser/Password1! into
+# an untouched form, so clear both fields first: the right edge of each field is
+# its clear (X) button, and tapping there only focuses a field that is already
+# empty.
 - tapOn:
-    id: "login-btn"
+    id: "username"
+    point: "95%,50%"
+# Clearing the username focuses it, which opens the suggestion list over the
+# password field — blur it by tapping the read-only server line.
+- tapOn: "${SERVER_URL}"
+- extendedWaitUntil:
+    notVisible:
+      id: "username-suggest-list"
+    timeout: 5000
+- tapOn:
+    id: "password"
+    point: "95%,50%"
+- pressKey: Enter
 - assertVisible: "Please fill in all fields."
 - assertNotVisible: "Groups"
 
 # Username only -> still rejected (Enter submits the form from the field, which
-# avoids needing to tap the Login button under the soft keyboard).
+# avoids needing to tap the Login button under the soft keyboard). The demo
+# password is only filled into an untouched form or when appuser is picked from
+# the suggestion list, never while typing, so it is empty here.
 - tapOn:
     id: "username"
 - inputText: ${USERNAME}

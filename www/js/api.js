@@ -74,6 +74,57 @@ const api = {
     return this.baseUrl || localStorage.getItem('serverUrl') || '';
   },
 
+  /**
+   * Verify that a server URL points at a Tangerine server this app can use.
+   *
+   * Every Tangerine version that supports the RESPECT/RESPOND app integration
+   * serves `/respect-app-manifest` on the same host as `/login`. That route
+   * answers 200 (manifest served) or 401 (credentials required) on a
+   * supported server, while anything that is not a Tangerine server — or an
+   * older Tangerine without the integration — answers 404. Checking it up
+   * front reports a wrong URL on the server screen instead of letting the user
+   * reach the credentials screen and fail there with a bare "Login failed".
+   *
+   * @param {string} url  The URL the user entered (trailing slashes allowed).
+   * @returns {Promise<{ok: boolean, reason?: 'empty'|'invalid'|'unreachable'|'not-tangerine', status?: number}>}
+   */
+  async checkServer(url) {
+    const baseUrl = String(url || '').trim().replace(/\/+$/, '');
+    if (!baseUrl) return { ok: false, reason: 'empty' };
+
+    let parsed;
+    try {
+      parsed = new URL(baseUrl);
+    } catch (e) {
+      return { ok: false, reason: 'invalid' };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, reason: 'invalid' };
+    }
+
+    const manifestUrl = `${baseUrl}/respect-app-manifest`;
+    let response;
+    try {
+      response = await httpClient.get(manifestUrl);
+    } catch (e) {
+      console.warn('[API] Server check could not reach', manifestUrl, e.message);
+      return { ok: false, reason: 'unreachable' };
+    }
+
+    const status = response.status;
+    console.log('[API] Server check', manifestUrl, '->', status);
+
+    // 2xx: the manifest was served. 401/403: the route exists but needs
+    // credentials — both prove this is a Tangerine server with app support.
+    if ((status >= 200 && status < 300) || status === 401 || status === 403) {
+      return { ok: true, status };
+    }
+    // 5xx is a server/proxy failure, not evidence of a wrong URL.
+    if (status >= 500) return { ok: false, reason: 'unreachable', status };
+    // Everything else (404 in particular) is not a supported Tangerine server.
+    return { ok: false, reason: 'not-tangerine', status };
+  },
+
   getRespectUrl() {
     return localStorage.getItem('respectUrl') || '';
   },
@@ -101,6 +152,24 @@ const api = {
    */
   isDemoServer(server) {
     return !!server && _normalizeServer(server) === _normalizeServer(DEMO_SERVER);
+  },
+
+  /**
+   * The demo server URL. Used to prefill an empty server field on a first
+   * launch, where there is no remembered server to offer.
+   */
+  getDemoServer() {
+    return DEMO_SERVER;
+  },
+
+  /**
+   * The demo credentials (username + password) when the given server — by
+   * default the current one — is the demo server, or null otherwise. Used to
+   * prefill an untouched credentials screen.
+   */
+  getDemoCredentials(server = this.getBaseUrl()) {
+    if (!this.isDemoServer(server)) return null;
+    return { username: DEMO_USERNAME, password: DEMO_PASSWORD };
   },
 
   /**
@@ -306,7 +375,7 @@ const api = {
   /**
    * Resolve the learningUnits (groups) URL from the stored respectUrl.
    */
-  async _resolveLearningUnitsUrl() {
+  async _resolveLearningUnitsUrl(force = false) {
     // Check if manifest is already cached
     const manifest = localStorage.getItem('respectManifest');
     if (manifest) {
@@ -337,9 +406,7 @@ const api = {
 
     try {
       console.log('[API] Fetching manifest from respectUrl:', stored);
-      const response = await httpClient.get(stored, {
-        'Authorization': localStorage.getItem('token')
-      });
+      const response = await httpClient.get(stored, this._cachedGetHeaders(force));
       if (response.ok) {
         const manifest = await response.json();
         console.log('[API] Manifest response:', JSON.stringify(manifest, null, 2).slice(0, 500));
@@ -469,9 +536,9 @@ const api = {
     }
   },
 
-  async getGroups() {
+  async getGroups({ force = false } = {}) {
     // First try resolving the learningUnits URL (may fetch manifest if respectUrl is a URL)
-    const learningUnitsUrl = await this._resolveLearningUnitsUrl();
+    const learningUnitsUrl = await this._resolveLearningUnitsUrl(force);
 
     let data;
 
@@ -497,9 +564,7 @@ const api = {
         ? learningUnitsUrl
         : `${this.getBaseUrl()}/groups`;
       console.log('[API] GET groups request to:', url);
-      const response = await httpClient.get(url, {
-        'Authorization': localStorage.getItem('token')
-      });
+      const response = await httpClient.get(url, this._cachedGetHeaders(force));
       console.log('[API] GET groups response status:', response.status);
       if (!response.ok) {
         const errorText = await response.text();
@@ -574,12 +639,10 @@ const api = {
     return `${base}/opds/groups/${groupId}`;
   },
 
-  async getFormsForGroup(groupId) {
+  async getFormsForGroup(groupId, { force = false } = {}) {
     const url = this._buildGroupOpdsUrl(groupId);
     console.log('[API] GET forms request to:', url);
-    const response = await httpClient.get(url, {
-      'Authorization': localStorage.getItem('token')
-    });
+    const response = await httpClient.get(url, this._cachedGetHeaders(force));
     console.log('[API] GET forms response status:', response.status);
     if (!response.ok) {
       const errorText = await response.text();
@@ -591,26 +654,72 @@ const api = {
     // Transform OPDS publications into the format views.js expects
     if (data.publications && Array.isArray(data.publications)) {
       console.log('[API] Transforming OPDS publications to form objects');
-      return data.publications.map(pub => {
+      const forms = data.publications.map(pub => {
         const formId = extractFormId(
           (pub.metadata && pub.metadata.identifier) || ''
         );
         const openAccessLink = (pub.links || []).find(
           l => l.rel === 'http://opds-spec.org/acquisition/open-access'
         );
+        // rel may be a string or an array in Readium/OPDS JSON.
+        const selfLink = (pub.links || []).find(l =>
+          Array.isArray(l.rel) ? l.rel.includes('self') : l.rel === 'self'
+        );
         return {
           id: formId,
           title: (pub.metadata && pub.metadata.title) || formId || 'Unnamed Form',
           name: (pub.metadata && pub.metadata.title) || formId,
+          // Feed-level modified in a LISTING (all publications share it).
+          // The per-form value lives on the publication detail, which is what
+          // getFormManifest() fetches for staleness checks.
           modified: (pub.metadata && pub.metadata.modified) || null,
           _openAccessUrl: openAccessLink
             ? openAccessLink.href
-            : null
+            : null,
+          _selfUrl: selfLink ? selfLink.href : null
         };
       });
+      // Feed-level modified (all publications in a listing share it). Moves
+      // whenever anything in the group changes, so it is a cheap "did this
+      // group change?" hint before probing individual publications.
+      forms.feedModified = (data.metadata && data.metadata.modified) || null;
+      return forms;
     }
 
     return data;
+  },
+
+  /**
+   * Headers for a GET that should participate in HTTP caching.
+   * `force` asks the native cache to skip its fresh/conditional fast path, so
+   * the Sync button really asks the server (the marker never leaves the app).
+   */
+  _cachedGetHeaders(force) {
+    const headers = { 'Authorization': localStorage.getItem('token') };
+    if (force) headers['X-Tangy-Refresh'] = '1';
+    return headers;
+  },
+
+  /**
+   * Fetch a publication (form) detail manifest.
+   *
+   * Goes through the normal GET cache, so an unchanged manifest costs a 304 (or
+   * nothing at all while inside the server's 300s max-age). Used to read the
+   * per-form `metadata.modified` for stale-cache detection.
+   */
+  async getFormManifest(manifestUrl, { force = false } = {}) {
+    if (!manifestUrl) return null;
+    try {
+      const response = await httpClient.get(manifestUrl, this._cachedGetHeaders(force));
+      if (!response.ok) {
+        console.warn('[API] Form manifest fetch status', response.status, manifestUrl);
+        return null;
+      }
+      return await response.json();
+    } catch (e) {
+      console.warn('[API] Form manifest fetch failed:', manifestUrl, e.message);
+      return null;
+    }
   },
 
   async getGroupLabel(groupId) {

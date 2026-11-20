@@ -1,0 +1,60 @@
+# R1, phase 0 — land on Home with the SCHOOL-ADMIN account selected.
+#
+# Two things have to be true before the tile overflow can be tapped, and they are
+# deliberately done in ONE flow, in ONE session:
+#
+#  1. RESPECT must be signed in as a school admin. `canRemove` comes from the
+#     selected person's role (AppLauncherViewModel: `canRemove = person.isAdmin()`),
+#     so a non-admin account gets a tile menu containing only "More Info" — no
+#     "Remove" — and R1's clear-the-catalog step fails looking like a test bug.
+#     The case's own wording ("Login to the Respect server and add the Tangerine
+#     app") assumes the admin.
+#
+#  2. The account choice does NOT survive a cold start: RESPECT comes back on the
+#     other account after `stopApp` + `launchApp` (measured: admin selected ->
+#     force-stop -> launch -> non-admin again). So this flow must NOT cold start,
+#     and the driver's tile tap must follow immediately, in the same session.
+#
+# RESPECT keeps every account used on the device and switches between them from
+# the Accounts screen (app-bar avatar, testTag "user_account_icon") WITHOUT a
+# password, because the credentials are already stored. Tapping the account that
+# is already selected is a no-op, so this is safe to run unconditionally.
+#
+# Everything is selected by testTag or accessible name - no coordinate taps.
+#
+# Requires: RESPECT_ADMIN_ACCOUNT (the display name the Accounts screen shows,
+# e.g. "Admin Admin"), that account to have been used on this device before, and
+# the network (RESPECT needs its data to render Home).
+appId: world.respect.app
+---
+# launchApp only RESUMES: a cold start would undo the account selection (above).
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: "user_account_icon"
+    timeout: 60000
+
+- tapOn:
+    id: "user_account_icon"
+- assertVisible:
+    id: "app_title"
+    text: "Accounts"
+
+# Switch to the admin account. Harmless when it is already the selected one.
+- tapOn: "${RESPECT_ADMIN_ACCOUNT}"
+
+# Selecting a DIFFERENT account navigates home by itself; tapping the one already
+# selected leaves the Accounts screen up, so back out when we are still on it.
+- runFlow:
+    when:
+      visible:
+        id: "app_title"
+        text: "Accounts"
+    commands:
+      - tapOn: "Back"
+
+# "Bookmarks" only exists on Home, so this pins the screen: the driver's tile tap
+# and 020_r1_respect_remove_app.yaml both depend on the Apps grid being up.
+- extendedWaitUntil:
+    visible: "Bookmarks"
+    timeout: 30000

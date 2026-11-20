@@ -10,7 +10,6 @@
 # Requires: GROUP_NAME, FORM_NAME, ANSWER. SERVER_URL/USERNAME/PASSWORD only if
 # the stored session was lost.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "../subflows/ensure_logged_in.yaml"
 

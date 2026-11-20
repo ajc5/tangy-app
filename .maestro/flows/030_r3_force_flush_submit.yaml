@@ -11,7 +11,6 @@
 #
 # Requires: SERVER_URL, USERNAME, PASSWORD, GROUP_NAME, FORM_NAME, ANSWER
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "../subflows/ensure_logged_in.yaml"
 - runFlow: "../subflows/open_form.yaml"

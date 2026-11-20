@@ -26,6 +26,24 @@ export interface CacheStats {
   sizeLimitBytes: number;
 }
 
+/**
+ * Metadata for a cached URL. Returned by `getCacheInfo` without reading the
+ * stored body, so the UI can decide whether a pinned form is stale.
+ */
+export interface CacheInfo {
+  url: string;
+  cached: boolean;
+  /** Local clock at the time the entry was (re)validated, ms since epoch. */
+  storedAt: number;
+  sizeBytes: number;
+  /** Validators from the origin response, if it sent any. */
+  etag: string;
+  lastModified: string;
+  cacheControl: string;
+  /** `Date` header from the response that stored this copy (server clock). */
+  serverDate: string;
+}
+
 export interface OfflineUrl {
   url: string;
   remark?: string;
@@ -35,6 +53,11 @@ export interface TangyCachePlugin {
   store(options: { url: string; mimeType: string; body: string; headers?: Record<string, string> }): Promise<void>;
   retrieve(options: { url: string }): Promise<{ body: string; mimeType: string; headers: Record<string, string> } | null>;
   isCached(options: { url: string }): Promise<{ cached: boolean }>;
+  /**
+   * Metadata (validators, server Date, storedAt) for one or more cached URLs,
+   * without reading the bodies. Used to detect stale pinned forms.
+   */
+  getCacheInfo(options: { urls?: string[]; url?: string }): Promise<{ entries: CacheInfo[] }>;
   /**
    * Remove specific URLs from the disk cache (uncache). No-op for URLs
    * that are not currently cached.
@@ -76,6 +99,16 @@ export interface TangyCachePlugin {
     launchedFromRespect?: boolean;
     /** The launcher's package name (the `xapiIpcPackage` launch param). */
     ipcPackage?: string;
+    /**
+     * Show the DEMO MODE pill in the overlay's native toolbar.
+     *
+     * Demo mode is a property of the SERVER, not of a screen, so it has to keep
+     * showing while a form is open — the form overlay is a separate WebView and
+     * would otherwise be the one place the pill disappears.
+     */
+    demoMode?: boolean;
+    /** Label for that pill (defaults to "DEMO MODE"); pass the translated string. */
+    demoModeLabel?: string;
   }): Promise<void>;
 
   /**
@@ -110,4 +143,33 @@ export interface TangyCachePlugin {
     ipcPackage: string;
     statementsJson: string;
   }): Promise<{ ok: boolean; pending: number }>;
+
+  /**
+   * How many form responses are queued on disk because they could not be sent.
+   *
+   * Submissions made with no network are written to a durable queue and
+   * uploaded automatically when connectivity returns; this is the count the UI
+   * shows so the user knows their work is held on the device rather than lost.
+   */
+  getPendingCount(): Promise<{ count: number }>;
+
+  /**
+   * Upload every queued response now.
+   *
+   * Responses the server rejects stay in the queue (a 4xx/5xx is the user's
+   * data, not something to discard), so `remaining` can be non-zero afterwards.
+   * Safe to call while the automatic post-reconnect upload is running: drains
+   * are serialised and each response is claimed before it is sent.
+   */
+  syncPending(): Promise<{
+    synced: number;
+    failed: number;
+    xapiSynced: number;
+    remaining: number;
+    /** True when the automatic post-reconnect upload already had the queue. */
+    skipped: boolean;
+  }>;
+
+  /** Discard every queued response. Destructive — not surfaced in the app UI. */
+  clearPending(): Promise<void>;
 }

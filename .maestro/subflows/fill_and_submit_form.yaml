@@ -6,7 +6,6 @@
 #
 # Requires: ANSWER.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 # The first question is a tangy-input, whose inner paper-textarea exposes the
 # DOM id "textarea" to the accessibility tree.

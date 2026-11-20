@@ -1,3 +1,5 @@
+# R1, phase 0b — tap "Remove" in the tile menu the driver has just opened.
+#
 # R1, phase 0 — make the add path genuinely repeatable.
 #
 # RESPECT persists the apps added to a school, and 025 short-circuits when
@@ -8,37 +10,34 @@
 #
 # RESPECT exposes this from the tile's overflow menu: the 3 vertical dots at the
 # tile's top-right -> "Remove" (removal is immediate; no confirmation dialog).
-# The 3-dot is a clickable View with NO text and NO contentDescription, so it can
-# only be reached by point. It sits at ~25%,22% of a 1080x2400 screen with one
-# tile in the grid (measured 272,517 device px).
 #
-# No-op when Tangerine is absent (first run, or already removed) — the closing
-# assertion states the postcondition either way, so R1 may assert an empty
-# catalog without caring how it got that way.
+# That 3-dot is a Compose IconButton whose Icon has contentDescription = "" and
+# no testTag, so the accessibility tree offers NOTHING to select it by — not even
+# for Maestro's relative selectors, which have to anchor on some named node.
+# `pm clear` cannot substitute for it either: RESPECT stores the school's app
+# list on its server. So the driver derives the tap point from the accessibility
+# tree instead of hard-coding a coordinate:
 #
-# Requires: RESPECT to be logged in (a school must be selected).
+#   .maestro/scripts/tile_overflow_point.py <dump.xml> Tangerine
+#
+# which walks title -> enclosing clickable tile -> smallest clickable node inside
+# it (the overflow). This flow therefore starts from the state that driver tap
+# leaves behind, and everything below it is asserted by accessible name.
+#
+# Requires: 020_r1_respect_open_apps.yaml has parked RESPECT on Home and the
+# driver has tapped the tile overflow, so the menu is open.
 appId: world.respect.app
 ---
-- launchApp
-- assertVisible: "Apps"
-# "Bookmarks" only exists on Home. Asserting it pins the screen: the tile label
-# "Tangerine" below is unique, but relying on its ABSENCE is only sound if we
-# know which screen we are looking at.
-- assertVisible: "Bookmarks"
-
-- runFlow:
-    when:
-      visible: "Tangerine"
-    commands:
-      - tapOn:
-          point: "25%,22%"
-      # Fails loudly if the tap was dropped rather than silently skipping the
-      # removal: RESPECT discards taps that land during a screen transition.
-      - assertVisible: "Remove"
-      - tapOn: "Remove"
-      - extendedWaitUntil:
-          notVisible: "Tangerine"
-          timeout: 15000
+# Fails loudly if the tap was dropped rather than silently skipping the removal:
+# RESPECT discards taps that land during a screen transition, and this is the
+# only place the drop can be seen.
+- extendedWaitUntil:
+    visible: "Remove"
+    timeout: 15000
+- tapOn: "Remove"
 
 # The postcondition 025 relies on to take its navigate branch.
+- extendedWaitUntil:
+    notVisible: "Tangerine"
+    timeout: 15000
 - assertNotVisible: "Tangerine"

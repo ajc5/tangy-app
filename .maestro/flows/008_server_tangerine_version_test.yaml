@@ -1,0 +1,38 @@
+# A URL that is NOT a Tangerine server is rejected on step 1.
+#
+# Tangerine servers that support this app answer `/respect-app-manifest` with
+# 200 or 401; anything else (example.com answers 404) means the URL is either
+# not Tangerine at all or an older version without the RESPECT integration.
+#
+# Requires internet access (example.com must resolve and answer).
+appId: org.tangerinecentral.tangerine
+---
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible: "Enter your server URL"
+    timeout: 30000
+
+- tapOn:
+    id: "server-url"
+    point: "95%,50%"
+- eraseText: 200
+- inputText: "https://example.com"
+- tapOn: "Enter your server URL"
+- extendedWaitUntil:
+    notVisible:
+      id: "server-suggest-list"
+    timeout: 5000
+- tapOn:
+    id: "connect-btn"
+
+# 404 from /respect-app-manifest -> wrong server / older Tangerine.
+- extendedWaitUntil:
+    visible: "This URL is not a Tangerine server with app support. Please set it to the correct version of Tangerine."
+    timeout: 30000
+
+# Still on step 1 — no credentials screen was reached.
+- assertNotVisible: "Server:"
+- assertNotVisible:
+    id: "login-btn"

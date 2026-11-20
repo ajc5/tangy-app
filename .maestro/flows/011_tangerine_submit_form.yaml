@@ -7,7 +7,6 @@
 #           GROUP_DB, COUCH_USER, COUCH_PASSWORD
 # Optional: FORM_ID (narrows the count to one form)
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - runFlow: "../subflows/ensure_logged_out.yaml"
 - runFlow: "../subflows/login.yaml"

@@ -3,7 +3,6 @@
 #
 # Requires: GROUP_NAME, FORM_NAME.
 appId: org.tangerinecentral.tangerine
-androidWebViewHierarchy: devtools
 ---
 - tapOn: "${GROUP_NAME}"
 

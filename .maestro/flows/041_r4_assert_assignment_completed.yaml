@@ -1,0 +1,35 @@
+# R4, phase 3 — the assignment must now report the task as completed.
+#
+# Catalogue case 4c: "Verify that the task is set to completed in the Respect
+# assignment."
+#
+# Asserted on the assignment's OWN detail screen rather than the list card: the
+# list shows "<n>/<m> Completed" per card, so a bare "1/1 Completed" assertion
+# would also be satisfied by an unrelated assignment that was already complete.
+# The detail screen's status filter chips ("Completed (N)") belong to this
+# assignment only.
+#
+# Polled, never sampled: RESPECT receives the statements over IPC while offline
+# and posts them to the LRS when it can, so the completion lands tens of seconds
+# after the submission - a single check taken on arrival reports a false
+# negative.
+#
+# Requires: ASSIGNMENT_NAME, ASSIGNMENT_STUDENT_COUNT (default 1)
+appId: world.respect.app
+---
+- stopApp
+- launchApp
+
+- extendedWaitUntil:
+    visible: "Apps"
+    timeout: 60000
+
+- tapOn: "Assignments"
+- extendedWaitUntil:
+    visible: "${ASSIGNMENT_NAME}"
+    timeout: 60000
+
+- tapOn: "${ASSIGNMENT_NAME}"
+- extendedWaitUntil:
+    visible: "Completed (${ASSIGNMENT_STUDENT_COUNT})"
+    timeout: 180000
